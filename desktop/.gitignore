@@ -1,0 +1,8 @@
+node_modules/
+out/
+backend-dist/
+.pyinstaller-build/
+.pyinstaller-spec/
+.npm-cache/
+.tmp/
+*.log

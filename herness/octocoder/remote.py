@@ -15,11 +15,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import time
 from pathlib import Path
 from typing import Any
 
+import yaml
 import websockets
 from websockets.asyncio.server import Server as WSServer, ServerConnection
 from websockets.http11 import Request, Response
@@ -44,9 +46,9 @@ from octocoder.client import create_client, resolve_context_window
 from octocoder.commands import CommandContext, CommandRegistry, CommandType
 from octocoder.commands.handlers import register_all_commands
 from octocoder.commands.parser import parse_command
-from octocoder.config import MCPServerConfig, ProviderConfig
+from octocoder.config import ConfigError, MCPServerConfig, ProviderConfig, load_config
 from octocoder.conversation import ConversationManager
-from octocoder.hooks import HookEngine
+from octocoder.hooks import HookConfigError, HookEngine, load_hooks
 from octocoder.mcp import MCPManager
 from octocoder.memory import MemoryManager, load_instructions
 from octocoder.memory.session import Session, SessionManager
@@ -74,7 +76,7 @@ class RemoteServer:
         providers: list[ProviderConfig],
         mcp_servers: list[MCPServerConfig] | None = None,
         hook_engine: HookEngine | None = None,
-        addr: str = "0.0.0.0",
+        addr: str = "127.0.0.1",
         port: int = 18888,
     ) -> None:
         self.providers = providers
@@ -82,6 +84,10 @@ class RemoteServer:
         self.hook_engine = hook_engine
         self.addr = addr
         self.port = port
+        self.config_error = ""
+        self.config_message = ""
+        self.config_dir = Path.cwd()
+        self.work_dir = str(Path.cwd())
 
         # WebSocket 连接池（支持多客户端广播）
         self._connections: set[ServerConnection] = set()
@@ -103,6 +109,7 @@ class RemoteServer:
 
         # MCP 相关
         self.mcp_manager: MCPManager | None = None
+        self._mcp_task: asyncio.Task[None] | None = None
         self._mcp_instructions: str = ""
 
         # Skill 加载器
@@ -113,6 +120,250 @@ class RemoteServer:
         self.session_manager: SessionManager | None = None
         self.session: Session | None = None
 
+    def _config_path(self) -> Path:
+        return self.config_dir / ".octocoder" / "config.yaml"
+
+    def _read_config_file(self) -> dict[str, Any]:
+        path = self._config_path()
+        if not path.exists():
+            return {}
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+
+    def _load_runtime_config(self) -> None:
+        config_path = self._config_path()
+        config = load_config(config_path) if config_path.exists() else load_config()
+        hooks = load_hooks(config.raw_hooks)
+        self.providers = config.providers
+        self._mcp_server_configs = config.mcp_servers
+        self.hook_engine = HookEngine(hooks) if hooks else None
+
+    def _provider_status(self) -> dict[str, Any]:
+        provider = self.providers[0] if self.providers else None
+        raw = self._read_config_file()
+        raw_provider = {}
+        raw_providers = raw.get("providers") if isinstance(raw, dict) else None
+        if isinstance(raw_providers, list) and raw_providers and isinstance(raw_providers[0], dict):
+            raw_provider = raw_providers[0]
+
+        return {
+            "name": provider.name if provider else str(raw_provider.get("name", "deepseek")),
+            "protocol": provider.protocol if provider else str(raw_provider.get("protocol", "openai-compat")),
+            "baseUrl": provider.base_url if provider else str(raw_provider.get("base_url", "https://api.deepseek.com/v1")),
+            "model": provider.model if provider else str(raw_provider.get("model", "deepseek-chat")),
+            "apiKeyConfigured": bool(provider.resolve_api_key()) if provider else bool(raw_provider.get("api_key", "")),
+            "thinking": bool(provider.thinking) if provider else bool(raw_provider.get("thinking", False)),
+            "contextWindow": int(provider.context_window) if provider else int(raw_provider.get("context_window", 0) or 0),
+            "maxOutputTokens": int(provider.max_output_tokens) if provider else int(raw_provider.get("max_output_tokens", 0) or 0),
+        }
+
+    def _config_status(self) -> dict[str, Any]:
+        return {
+            "ready": self.agent is not None,
+            "configured": bool(self.providers),
+            "error": self.config_error,
+            "message": self.config_message,
+            "configPath": str(self._config_path()),
+            "cwd": self.work_dir,
+            "provider": self._provider_status(),
+        }
+
+    async def _try_start_agent(self) -> bool:
+        try:
+            self._load_runtime_config()
+            self._init_agent()
+        except (ConfigError, HookConfigError, Exception) as exc:
+            self.agent = None
+            self.conversation = None
+            self.registry = None
+            self.session_id = ""
+            self.config_error = str(exc)
+            return False
+
+        self.config_error = ""
+        if not self.config_message:
+            self.config_message = "Configuration loaded."
+        self._start_mcp_background()
+        return True
+
+    def _start_mcp_background(self) -> None:
+        if self._mcp_task is not None and not self._mcp_task.done():
+            return
+        if not self._mcp_server_configs or self.registry is None:
+            return
+        self._mcp_task = asyncio.create_task(self._init_mcp_background())
+
+    async def _init_mcp_background(self) -> None:
+        try:
+            await self._init_mcp()
+            await self._broadcast({"type": "commands", "data": self._build_command_list()})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("MCP initialization failed: %s", exc)
+            await self._broadcast({
+                "type": "system",
+                "data": {"message": f"MCP initialization failed: {exc}"},
+            })
+
+    async def _restart_agent(self) -> bool:
+        self._streaming = False
+        if self._mcp_task is not None and not self._mcp_task.done():
+            self._mcp_task.cancel()
+            try:
+                await self._mcp_task
+            except asyncio.CancelledError:
+                pass
+        self._mcp_task = None
+        if self.mcp_manager is not None:
+            await self.mcp_manager.shutdown()
+        self.mcp_manager = None
+        self._mcp_instructions = ""
+        self._pending_perms.clear()
+        self.agent = None
+        self.conversation = None
+        self.registry = None
+        self.session_id = ""
+        return await self._try_start_agent()
+
+    def _write_config(self, data: dict[str, Any]) -> None:
+        path = self._config_path()
+        raw = self._read_config_file()
+        if not isinstance(raw, dict):
+            raw = {}
+
+        existing_provider: dict[str, Any] = {}
+        existing_providers = raw.get("providers")
+        if isinstance(existing_providers, list) and existing_providers and isinstance(existing_providers[0], dict):
+            existing_provider = existing_providers[0]
+
+        api_key = str(data.get("apiKey", "")).strip() or str(existing_provider.get("api_key", "")).strip()
+        if not api_key:
+            raise ConfigError("API key is required")
+
+        provider = {
+            "name": str(data.get("name", "default")).strip() or "default",
+            "protocol": str(data.get("protocol", "openai-compat")).strip(),
+            "base_url": str(data.get("baseUrl", "")).strip(),
+            "model": str(data.get("model", "")).strip(),
+            "api_key": api_key,
+            "thinking": bool(data.get("thinking", False)),
+        }
+
+        if not provider["base_url"]:
+            raise ConfigError("Base URL is required")
+        if not provider["model"]:
+            raise ConfigError("Model is required")
+
+        context_window = int(data.get("contextWindow", 0) or 0)
+        max_output_tokens = int(data.get("maxOutputTokens", 0) or 0)
+        if context_window > 0:
+            provider["context_window"] = context_window
+        if max_output_tokens > 0:
+            provider["max_output_tokens"] = max_output_tokens
+
+        raw["providers"] = [provider]
+        raw["permission_mode"] = str(data.get("permissionMode", raw.get("permission_mode", "default")) or "default")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        load_config(path)
+
+    async def _handle_config_save(self, data: dict[str, Any]) -> None:
+        try:
+            self._write_config(data)
+            self.config_message = "Configuration saved and verified."
+            self.config_error = ""
+            await self._restart_agent()
+            if self.agent is None and not self.config_error:
+                self.config_error = "Configuration saved, but OctoCoder did not become ready."
+        except Exception as exc:
+            self.config_error = str(exc)
+            self.config_message = ""
+        await self._broadcast({"type": "config_status", "data": self._config_status()})
+
+    def _project_info(self) -> dict[str, str]:
+        path = Path(self.work_dir)
+        return {
+            "name": path.name or str(path),
+            "path": str(path),
+        }
+
+    async def _handle_project_open(self, data: dict[str, Any]) -> None:
+        if self._streaming:
+            await self._broadcast({
+                "type": "error",
+                "data": {"message": "Wait for the current task to finish before switching projects."},
+            })
+            return
+
+        raw_path = str(data.get("path", "")).strip()
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.exists() or not path.is_dir():
+                raise ConfigError(f"Project folder does not exist: {raw_path}")
+
+            self.work_dir = str(path)
+            self.config_message = f"Project opened: {path}"
+            self.config_error = ""
+            await self._restart_agent()
+        except Exception as exc:
+            self.config_error = str(exc)
+            await self._broadcast({
+                "type": "error",
+                "data": {"message": f"Failed to open project: {exc}"},
+            })
+            await self._broadcast({"type": "config_status", "data": self._config_status()})
+            return
+
+        info = self._project_info()
+        await self._broadcast({
+            "type": "project_opened",
+            "data": {
+                **info,
+                "session": self.session_id,
+            },
+        })
+        await self._broadcast({
+            "type": "connected",
+            "data": {
+                "session": self.session_id,
+                "cwd": self.work_dir,
+            },
+        })
+        await self._broadcast({"type": "commands", "data": self._build_command_list()})
+        await self._broadcast({"type": "config_status", "data": self._config_status()})
+        await self._broadcast({
+            "type": "system",
+            "data": {"message": f"Working directory switched to {self.work_dir}"},
+        })
+
+    async def _handle_project_clear(self) -> None:
+        if self._streaming:
+            await self._broadcast({
+                "type": "error",
+                "data": {"message": "Wait for the current task to finish before clearing the workspace."},
+            })
+            return
+
+        self.work_dir = str(self.config_dir)
+        self.config_message = "Workspace cleared. Using default working directory."
+        self.config_error = ""
+        await self._restart_agent()
+        await self._broadcast({
+            "type": "connected",
+            "data": {
+                "session": self.session_id,
+                "cwd": self.work_dir,
+            },
+        })
+        await self._broadcast({"type": "commands", "data": self._build_command_list()})
+        await self._broadcast({"type": "config_status", "data": self._config_status()})
+        await self._broadcast({
+            "type": "system",
+            "data": {"message": f"Using default working directory: {self.work_dir}"},
+        })
+
     # ------------------------------------------------------------------
     # 启动入口
     # ------------------------------------------------------------------
@@ -120,7 +371,7 @@ class RemoteServer:
     async def run(self) -> None:
         """启动 HTTP + WebSocket 服务器。"""
         # 初始化 Agent
-        self._init_agent()
+        await self._try_start_agent()
 
         # 初始化 MCP（如果有配置）
         await self._init_mcp()
@@ -142,23 +393,130 @@ class RemoteServer:
     # HTTP 请求处理（为 / 路径提供前端 HTML）
     # ------------------------------------------------------------------
 
+    async def run(self) -> None:
+        """Start HTTP/WebSocket first, then initialize Agent and MCP in the background."""
+        server = await websockets.serve(
+            self._ws_handler,
+            self.addr,
+            self.port,
+            process_request=self._process_http_request,
+            max_size=4 * 1024 * 1024,
+        )
+
+        print(f"\n  Remote UI: http://localhost:{self.port}\n", flush=True)
+        init_task = asyncio.create_task(self._try_start_agent())
+
+        try:
+            await server.serve_forever()
+        except asyncio.CancelledError:
+            server.close()
+            await server.wait_closed()
+            raise
+        finally:
+            if not init_task.done():
+                init_task.cancel()
+                try:
+                    await init_task
+                except asyncio.CancelledError:
+                    pass
+            if self._mcp_task is not None and not self._mcp_task.done():
+                self._mcp_task.cancel()
+                try:
+                    await self._mcp_task
+                except asyncio.CancelledError:
+                    pass
+            if self.mcp_manager is not None:
+                await self.mcp_manager.shutdown()
+
     def _process_http_request(
         self, connection: ServerConnection, request: Request
     ) -> Response | None:
         """拦截 HTTP 请求，对 / 路径返回 HTML 页面。
         返回 None 表示继续走 WebSocket 升级流程。
         """
-        if request.path == "/":
+        path = request.path.split("?", 1)[0]
+
+        if path == "/api/status":
+            provider = self.providers[0] if self.providers else None
+            return self._json_response({
+                "session": self.session_id,
+                "cwd": self.work_dir,
+                "streaming": self._streaming,
+                "provider": {
+                    "name": provider.name if provider else "",
+                    "protocol": provider.protocol if provider else "",
+                    "model": provider.model if provider else "",
+                },
+                "config": self._config_status(),
+                "commands": self._build_command_list(),
+            })
+
+        if path == "/api/commands":
+            return self._json_response(self._build_command_list())
+
+        if request.path != "/ws":
+            return self._serve_client_asset(path)
+        # /ws 路径 → 继续 WebSocket 升级
+        return None
+
+    def _serve_client_asset(self, request_path: str) -> Response:
+        dist = self._client_dist_dir()
+        if dist is not None:
+            relative = request_path.lstrip("/") or "index.html"
+            target = (dist / relative).resolve()
+            if self._is_relative_to(target, dist) and target.is_file():
+                return self._file_response(target)
+
+            index = dist / "index.html"
+            if index.is_file():
+                return self._file_response(index)
+
+        if request_path == "/":
             return Response(
                 200,
                 "OK",
                 websockets.Headers({"Content-Type": "text/html; charset=utf-8"}),
                 INDEX_HTML.encode("utf-8"),
             )
-        if request.path != "/ws":
-            return Response(404, "Not Found", websockets.Headers(), b"404 Not Found")
-        # /ws 路径 → 继续 WebSocket 升级
-        return None
+        return Response(404, "Not Found", websockets.Headers(), b"404 Not Found")
+
+    def _client_dist_dir(self) -> Path | None:
+        root = Path(__file__).resolve().parents[2]
+        dist = root / "client" / "dist"
+        return dist if dist.is_dir() else None
+
+    @staticmethod
+    def _is_relative_to(path: Path, parent: Path) -> bool:
+        try:
+            path.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _file_response(path: Path) -> Response:
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix == ".js":
+            content_type = "text/javascript"
+        elif path.suffix == ".css":
+            content_type = "text/css"
+        elif path.suffix == ".html":
+            content_type = "text/html; charset=utf-8"
+        return Response(
+            200,
+            "OK",
+            websockets.Headers({"Content-Type": content_type}),
+            path.read_bytes(),
+        )
+
+    @staticmethod
+    def _json_response(data: Any) -> Response:
+        return Response(
+            200,
+            "OK",
+            websockets.Headers({"Content-Type": "application/json; charset=utf-8"}),
+            json.dumps(data, ensure_ascii=False).encode("utf-8"),
+        )
 
     # ------------------------------------------------------------------
     # WebSocket 连接处理
@@ -173,7 +531,7 @@ class RemoteServer:
                 "type": "connected",
                 "data": {
                     "session": self.session_id,
-                    "cwd": os.getcwd(),
+                    "cwd": self.work_dir,
                 },
             })
 
@@ -219,10 +577,66 @@ class RemoteServer:
     # Agent 初始化（复刻 TUI 的 _select_provider 流程）
     # ------------------------------------------------------------------
 
+    async def _ws_handler(self, websocket: ServerConnection) -> None:
+        """Handle one WebSocket client."""
+        self._connections.add(websocket)
+        try:
+            await websocket.send(json.dumps({
+                "type": "connected",
+                "data": {
+                    "session": self.session_id,
+                    "cwd": self.work_dir,
+                },
+            }, ensure_ascii=False))
+            await websocket.send(json.dumps({
+                "type": "commands",
+                "data": self._build_command_list(),
+            }, ensure_ascii=False))
+            await websocket.send(json.dumps({
+                "type": "config_status",
+                "data": self._config_status(),
+            }, ensure_ascii=False))
+
+            async for raw in websocket:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = msg.get("type", "")
+                data = msg.get("data", {})
+
+                if msg_type == "user_message":
+                    content = str(data.get("content", "")).strip()
+                    if content:
+                        asyncio.create_task(self._handle_user_message(content))
+                elif msg_type == "permission_response":
+                    self._handle_permission_response(data)
+                elif msg_type == "cancel":
+                    if self._cancel_event is not None:
+                        self._cancel_event.set()
+                elif msg_type == "config_get":
+                    await websocket.send(json.dumps({
+                        "type": "config_status",
+                        "data": self._config_status(),
+                    }, ensure_ascii=False))
+                elif msg_type == "config_save":
+                    asyncio.create_task(self._handle_config_save(data))
+                elif msg_type == "project_open":
+                    asyncio.create_task(self._handle_project_open(data))
+                elif msg_type == "project_clear":
+                    asyncio.create_task(self._handle_project_clear())
+                elif msg_type == "ping":
+                    await websocket.send(json.dumps({"type": "pong", "data": None}, ensure_ascii=False))
+        except websockets.ConnectionClosed:
+            pass
+        finally:
+            self._connections.discard(websocket)
+
     def _init_agent(self) -> None:
         """初始化 Agent 及相关子系统。"""
         provider = self.providers[0]
-        work_dir = os.getcwd()
+        work_dir = self.work_dir
         home = Path.home()
 
         # 权限系统
@@ -335,6 +749,13 @@ class RemoteServer:
     async def _handle_user_message(self, content: str) -> None:
         """处理来自 Web UI 的用户消息或斜杠命令。"""
         if self._streaming:
+            return
+
+        if self.agent is None or self.conversation is None:
+            await self._broadcast({
+                "type": "error",
+                "data": {"message": "Open Settings and save a valid configuration before sending a task."},
+            })
             return
 
         # 斜杠命令

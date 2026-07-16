@@ -1,0 +1,4 @@
+.tmp/
+.pytest-tmp/
+.test-home/
+.octocoder/

@@ -1,0 +1,26 @@
+{
+  "name": "octocoder-desktop",
+  "productName": "OctoCoder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop client for OctoCoder",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "npm run build:client && npm run build:backend && node scripts/package-local.cjs",
+    "package:forge": "electron-forge package",
+    "make": "npm run build:client && npm run build:backend && node scripts/package-local.cjs && node scripts/make-win.cjs",
+    "make:forge": "electron-forge make",
+    "build:client": "node scripts/build-client.cjs",
+    "build:backend": "node scripts/build-backend.cjs",
+    "clean": "node scripts/clean.cjs"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-rpm": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "electron": "42.1.0"
+  }
+}

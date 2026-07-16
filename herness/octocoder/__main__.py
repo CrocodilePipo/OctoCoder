@@ -47,9 +47,42 @@ def main() -> None:
         "--remote",
         action="store_true",
         default=False,
-        help="Start in remote mode: WebSocket server on 0.0.0.0:18888 with browser UI",
+        help="Start in remote mode: WebSocket server on 127.0.0.1:18888 with browser UI",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Remote server host, used with --remote",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=18888,
+        help="Remote server port, used with --remote",
     )
     args = parser.parse_args()
+
+    if args.remote:
+        config = None
+        hook_engine = None
+        try:
+            config = load_config()
+            hooks = load_hooks(config.raw_hooks)
+            hook_engine = HookEngine(hooks) if hooks else None
+        except (ConfigError, HookConfigError):
+            pass
+
+        from octocoder.remote import RemoteServer
+
+        server = RemoteServer(
+            providers=config.providers if config else [],
+            mcp_servers=config.mcp_servers if config else [],
+            hook_engine=hook_engine,
+            addr=args.host,
+            port=args.port,
+        )
+        asyncio.run(server.run())
+        return
 
     try:
         config = load_config()
@@ -74,17 +107,6 @@ def main() -> None:
         return
 
     # Remote 模式：启动 WebSocket 服务器，浏览器访问 http://localhost:18888
-    if args.remote:
-        from octocoder.remote import RemoteServer
-
-        server = RemoteServer(
-            providers=config.providers,
-            mcp_servers=config.mcp_servers,
-            hook_engine=hook_engine,
-        )
-        asyncio.run(server.run())
-        return
-
     from octocoder.app import OctoCoderApp
     from octocoder.driver import NoAltScreenDriver
 
@@ -355,4 +377,3 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
 if __name__ == "__main__":
     main()
-
