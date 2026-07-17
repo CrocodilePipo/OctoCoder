@@ -1,5 +1,7 @@
 # OctoCoder
 
+[中文](README.zh-CN.md)
+
 OctoCoder is a local AI coding assistant with a Python backend, a React/Vite web client, and an Electron desktop shell. The desktop app bundles the backend so users can open the client, configure their model settings, choose a local project, and start working without running terminal commands manually.
 
 ## Project Layout
