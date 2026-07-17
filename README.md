@@ -1,113 +1,113 @@
 # OctoCoder
 
-[中文](README.zh-CN.md)
+[English](README.en.md)
 
-OctoCoder is a local AI coding assistant with a Python backend, a React/Vite web client, and an Electron desktop shell. The desktop app bundles the backend so users can open the client, configure their model settings, choose a local project, and start working without running terminal commands manually.
+OctoCoder 是一个本地 AI 编程助手项目，包含 Python 后端、React/Vite Web 客户端，以及 Electron 桌面客户端。桌面端会打包本地后端，用户打开软件后在设置里配置模型，即可选择本地项目并开始工作，不需要手动在终端里启动服务。
 
-## Project Layout
+## 项目结构
 
 ```text
 OctoCoder/
-  herness/   Python backend and terminal CLI
-  client/    React + Vite + TypeScript desktop/web client
-  desktop/   Electron shell, backend bundling, and installers
+  herness/   Python 后端与终端 CLI
+  client/    React + Vite + TypeScript 客户端
+  desktop/   Electron 桌面壳、后端打包与安装包脚本
 ```
 
-## Features
+## 功能特性
 
-- Terminal CLI: `uv run octocoder`
-- Remote backend mode for the desktop/web client
-- Codex-style desktop UI with chat, project picker, configurable model settings, and recent projects
-- Bundled backend distribution for desktop installs
-- Windows desktop package and Squirrel installer scripts
+- 终端 CLI：`uv run octocoder`
+- 远程后端模式，供 Web/桌面客户端连接
+- 类 Codex 的桌面界面，支持聊天、项目选择、模型配置、最近项目
+- 桌面安装包内置本地后端
+- Windows 桌面目录包与 Squirrel 安装包构建脚本
 
-## Requirements
+## 环境要求
 
 - Python 3.11+
 - `uv`
-- Node.js and npm
-- Windows for the current packaged installer workflow
+- Node.js 与 npm
+- 当前安装包构建流程主要面向 Windows
 
-The Python package is configured in `herness/pyproject.toml`. The web client and desktop shell have separate `package.json` files under `client/` and `desktop/`.
+Python 包配置位于 `herness/pyproject.toml`。Web 客户端和桌面壳分别在 `client/` 与 `desktop/` 目录下维护各自的 `package.json`。
 
-## Backend
+## 后端
 
-Install Python dependencies:
+安装 Python 依赖：
 
 ```powershell
 cd herness
 uv sync
 ```
 
-Run the terminal assistant:
+运行终端助手：
 
 ```powershell
 uv run octocoder
 ```
 
-Run the backend in remote mode for the client:
+以远程服务模式启动后端：
 
 ```powershell
 uv run octocoder --remote
 ```
 
-Run tests:
+运行测试：
 
 ```powershell
 uv run pytest
 ```
 
-## Client
+## 客户端
 
-Install client dependencies:
+安装前端依赖：
 
 ```powershell
 cd client
 npm install
 ```
 
-Start the Vite development server:
+启动 Vite 开发服务：
 
 ```powershell
 npm run dev
 ```
 
-Build the production client:
+构建生产版客户端：
 
 ```powershell
 npm run build
 ```
 
-When using the web client directly, start the backend in remote mode first.
+如果直接使用 Web 客户端，需要先启动后端远程服务。
 
-## Desktop
+## 桌面端
 
-Install desktop dependencies:
+安装桌面端依赖：
 
 ```powershell
 cd desktop
 npm install
 ```
 
-Start Electron in development:
+开发模式启动 Electron：
 
 ```powershell
 npm start
 ```
 
-Build the React client and bundled backend, then create a local desktop app directory:
+构建 React 客户端和内置后端，并生成本地桌面应用目录：
 
 ```powershell
 npm run package
 ```
 
-Create a Windows installer:
+生成 Windows 安装包：
 
 ```powershell
 npm run make
 ```
 
-Common output paths:
+常见输出路径：
 
 ```text
 desktop/out/OctoCoder-win32-x64/OctoCoder.exe
@@ -115,35 +115,35 @@ desktop/out/make/squirrel.windows/x64/OctoCoderSetup.exe
 desktop/backend-dist/win32-x64/
 ```
 
-## Configuration
+## 配置方式
 
-New users should open the desktop app and configure the model provider in Settings. After the configuration check succeeds, OctoCoder can be used immediately.
+新用户打开桌面客户端后，应先进入设置页配置模型服务。配置检测成功后，即可正常使用 OctoCoder。
 
-The desktop app supports:
+桌面客户端支持：
 
-- API key and model settings
-- Selecting a local project folder
-- Asking questions in the default working directory without selecting a project
-- Recent projects
-- Diagnostic export and log folder access from the Help menu
+- API Key 与模型配置
+- 选择本地项目文件夹
+- 不选择项目时，在默认工作路径内直接提问
+- 最近项目列表
+- 从帮助菜单导出诊断信息和打开日志目录
 
-## Development Notes
+## 开发说明
 
-- Keep backend code in `herness/`.
-- Keep UI code in `client/`.
-- Keep Electron, packaging, and installer code in `desktop/`.
-- Desktop packaging copies the built React client and a PyInstaller-built backend into the Electron app.
-- Build platform-specific backend binaries on the target platform.
+- 后端代码放在 `herness/`。
+- 前端 UI 代码放在 `client/`。
+- Electron、打包、安装器相关代码放在 `desktop/`。
+- 桌面端打包会复制构建后的 React 客户端，并把 PyInstaller 构建出的后端一并放入 Electron 应用。
+- 平台相关的后端二进制文件需要在目标平台上构建。
 
-## Troubleshooting
+## 常见问题
 
-If the desktop app fails to start the backend:
+如果桌面端启动后端失败：
 
-1. Open Help -> Export Diagnostics.
-2. Open Help -> Open Logs Folder.
-3. Confirm model settings in Settings.
-4. Confirm the bundled backend exists under `desktop/backend-dist/<platform>-<arch>/`.
+1. 打开“帮助 -> 导出诊断信息”。
+2. 打开“帮助 -> 打开日志目录”。
+3. 检查设置里的模型配置是否正确。
+4. 确认内置后端存在于 `desktop/backend-dist/<platform>-<arch>/`。
 
-If `uv` is not recognized, add it to `PATH` or install it again from the official installer.
+如果提示找不到 `uv`，请将 `uv` 加入 `PATH`，或重新安装 `uv`。
 
-If the installer build reports a metadata edit warning after writing artifacts, check whether the installer and unpacked app were still generated under `desktop/out/`.
+如果安装包构建时在写入元数据后出现 warning，请先检查 `desktop/out/` 下是否已经生成了安装包和本地应用目录。
