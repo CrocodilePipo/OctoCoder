@@ -118,6 +118,24 @@ const T = {
   aboutBody: "\u672c\u5730\u684c\u9762\u5ba2\u6237\u7aef\uff0c\u524d\u7aef\u8d1f\u8d23\u4ea4\u4e92\uff0c\u540e\u7aef\u7531\u672c\u5730 OctoCoder \u670d\u52a1\u63d0\u4f9b\u6267\u884c\u80fd\u529b\u3002",
 };
 
+const SIDEBAR_WIDTH_KEY = "octocoder:sidebarWidth";
+const SIDEBAR_DEFAULT_WIDTH = 286;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 420;
+
+function clampSidebarWidth(value: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
+}
+
+function readSidebarWidth(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    return Number.isFinite(stored) ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_WIDTH;
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
 type ProjectSelectResult =
   | { canceled: true; projects: ProjectInfo[] }
   | { canceled: false; project: ProjectInfo; projects: ProjectInfo[] };
@@ -502,6 +520,7 @@ export function App() {
   const [input, setInput] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [helpDialog, setHelpDialog] = useState<DesktopHelpDialog | null>(null);
   const [appInfo, setAppInfo] = useState<DesktopAppInfo | null>(null);
   const socketRef = useRef<OctoCoderSocket | null>(null);
@@ -533,6 +552,14 @@ export function App() {
       .then((info) => setAppInfo(info))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    } catch {
+      // localStorage may be unavailable in restricted contexts.
+    }
+  }, [sidebarWidth]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -862,7 +889,10 @@ export function App() {
         onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
         menus={menus}
       />
-      <div className={`app-shell ${sidebarCollapsed ? "collapsed" : ""}`}>
+      <div
+        className={`app-shell ${sidebarCollapsed ? "collapsed" : ""}`}
+        style={sidebarCollapsed ? undefined : { gridTemplateColumns: `${sidebarWidth}px 5px minmax(640px, 1fr)` }}
+      >
         {!sidebarCollapsed && (
           <Sidebar
             state={state}
@@ -874,6 +904,7 @@ export function App() {
             onPickProject={openProjectPicker}
           />
         )}
+        {!sidebarCollapsed && <SidebarResizeHandle width={sidebarWidth} onResize={setSidebarWidth} />}
         <main className="workspace">
           <TopBar state={state} onOpenSettings={() => setSettingsOpen(true)} />
           <section className="timeline" aria-label="Conversation timeline">
@@ -971,6 +1002,73 @@ function WindowResizeHandles() {
         />
       ))}
     </>
+  );
+}
+
+function SidebarResizeHandle({
+  width,
+  onResize
+}: {
+  width: number;
+  onResize: (width: number) => void;
+}) {
+  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startWidth: width
+    };
+    setDragging(true);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    onResize(clampSidebarWidth(drag.startWidth + event.screenX - drag.startX));
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can already be gone after rapid window interactions.
+    }
+    dragRef.current = null;
+    setDragging(false);
+  };
+
+  return (
+    <div
+      className={`sidebar-resize-handle ${dragging ? "dragging" : ""}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={SIDEBAR_MAX_WIDTH}
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          onResize(clampSidebarWidth(width - 12));
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          onResize(clampSidebarWidth(width + 12));
+        }
+      }}
+    />
   );
 }
 
