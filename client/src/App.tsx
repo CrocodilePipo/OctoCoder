@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
   Circle,
@@ -13,6 +15,7 @@ import {
   KeyRound,
   Loader2,
   MessagesSquare,
+  Mic,
   MoreHorizontal,
   OctagonX,
   PanelLeft,
@@ -22,9 +25,11 @@ import {
   Square,
   SquarePen,
   Trash2,
+  VolumeX,
   X
 } from "lucide-react";
 import { OctoCoderSocket } from "./socket";
+import { useVoiceAgent } from "./voice/useVoiceAgent";
 import type {
   ClientMessage,
   CommandInfo,
@@ -35,7 +40,11 @@ import type {
   ServerMessage,
   TimelineItem,
   ToolStatus,
-  Usage
+  Usage,
+  VoicePhase,
+  VoiceProviderId,
+  VoiceProviderSavePayload,
+  VoiceSettings
 } from "./types";
 import { formatElapsed, makeId, stringifyJson, toolPreview } from "./utils";
 
@@ -116,12 +125,119 @@ const T = {
   quickStartTitle: "OctoCoder \u5feb\u901f\u5f00\u59cb",
   quickStartBody: "\u5148\u5728\u8bbe\u7f6e\u91cc\u586b\u5199\u6a21\u578b\u548c API Key\uff0c\u7136\u540e\u9009\u62e9\u672c\u5730\u9879\u76ee\u6587\u4ef6\u5939\u5f00\u59cb\u4efb\u52a1\u3002\u5982\u679c\u4e0d\u9009\u9879\u76ee\u76f4\u63a5\u63d0\u95ee\uff0cOctoCoder \u4f1a\u5728\u9ed8\u8ba4\u5de5\u4f5c\u8def\u5f84\u5185\u6267\u884c\u3002",
   aboutBody: "\u672c\u5730\u684c\u9762\u5ba2\u6237\u7aef\uff0c\u524d\u7aef\u8d1f\u8d23\u4ea4\u4e92\uff0c\u540e\u7aef\u7531\u672c\u5730 OctoCoder \u670d\u52a1\u63d0\u4f9b\u6267\u884c\u80fd\u529b\u3002",
+  voiceSettings: "\u8bed\u97f3 Agent",
+  enableVoice: "\u542f\u7528\u8bed\u97f3",
+  autoSubmitVoice: "\u8f6c\u5199\u540e\u81ea\u52a8\u63d0\u4ea4",
+  startRecording: "\u5f00\u59cb\u5f55\u97f3",
+  stopRecording: "\u505c\u6b62\u5f55\u97f3\u5e76\u8f6c\u5199",
+  cancelRecording: "\u53d6\u6d88\u5f55\u97f3",
+  stopPlayback: "\u505c\u6b62\u8bed\u97f3\u64ad\u653e",
+  requestingMicrophone: "\u6b63\u5728\u8bf7\u6c42\u9ea6\u514b\u98ce\u6743\u9650",
+  recording: "\u5f55\u97f3\u4e2d",
+  transcribing: "\u6b63\u5728\u8f6c\u5199",
+  speaking: "\u6b63\u5728\u64ad\u653e",
+  voiceUnavailable: "\u8bf7\u5148\u5728\u8bbe\u7f6e\u4e2d\u914d\u7f6e\u8bed\u97f3",
 };
 
 const SIDEBAR_WIDTH_KEY = "octocoder:sidebarWidth";
 const SIDEBAR_DEFAULT_WIDTH = 286;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
+
+const VOICE_PROVIDER_PRESETS: Record<VoiceProviderId, {
+  label: string;
+  baseUrl: string;
+  streamingUrl: string;
+  sttModel: string;
+  streamingSttModel: string;
+  ttsModel: string;
+  voice: string;
+}> = {
+  siliconflow: {
+    label: "\u7845\u57fa\u6d41\u52a8 SiliconFlow",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    streamingUrl: "",
+    sttModel: "FunAudioLLM/SenseVoiceSmall",
+    streamingSttModel: "",
+    ttsModel: "FunAudioLLM/CosyVoice2-0.5B",
+    voice: "FunAudioLLM/CosyVoice2-0.5B:anna"
+  },
+  aliyun: {
+    label: "\u963f\u91cc\u4e91\u767e\u70bc",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    streamingUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    sttModel: "qwen3-asr-flash",
+    streamingSttModel: "qwen-audio-3.0-asr-flash-streaming",
+    ttsModel: "qwen-audio-3.0-tts-flash",
+    voice: "longanhuan_v3.6"
+  },
+  volcengine: {
+    label: "\u706b\u5c71\u5f15\u64ce\u8c46\u5305\u8bed\u97f3",
+    baseUrl: "https://openspeech.bytedance.com",
+    streamingUrl: "",
+    sttModel: "volc.bigasr.auc_turbo",
+    streamingSttModel: "",
+    ttsModel: "seed-tts-1.1",
+    voice: "zh_female_cancan_mars_bigtts"
+  },
+  openai: {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    streamingUrl: "",
+    sttModel: "gpt-4o-mini-transcribe",
+    streamingSttModel: "",
+    ttsModel: "tts-1",
+    voice: "alloy"
+  },
+  "openai-compatible": {
+    label: "\u81ea\u5b9a\u4e49 OpenAI-compatible",
+    baseUrl: "https://api.openai.com/v1",
+    streamingUrl: "",
+    sttModel: "gpt-4o-mini-transcribe",
+    streamingSttModel: "",
+    ttsModel: "tts-1",
+    voice: "alloy"
+  }
+};
+
+function editableVoiceProfiles(voice: VoiceSettings | undefined): VoiceProviderSavePayload[] {
+  if (voice?.profiles?.length) {
+    return voice.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      provider: profile.provider,
+      baseUrl: profile.baseUrl,
+      streamingUrl: profile.streamingUrl,
+      workspaceId: profile.workspaceId,
+      apiKey: "",
+      appId: "",
+      secretKey: "",
+      batchSttModel: profile.batchSttModel,
+      streamingSttModel: profile.streamingSttModel,
+      ttsModel: profile.ttsModel,
+      voice: profile.voice,
+      language: profile.language
+    }));
+  }
+  const provider = voice?.provider || "aliyun";
+  const preset = VOICE_PROVIDER_PRESETS[provider];
+  return [{
+    id: "default",
+    name: "Default",
+    provider,
+    baseUrl: voice?.baseUrl || preset.baseUrl,
+    streamingUrl: preset.streamingUrl,
+    workspaceId: "",
+    apiKey: "",
+    appId: "",
+    secretKey: "",
+    batchSttModel: voice?.sttModel || preset.sttModel,
+    streamingSttModel: preset.streamingSttModel,
+    ttsModel: voice?.ttsModel || preset.ttsModel,
+    voice: voice?.voice || preset.voice,
+    language: voice?.language || ""
+  }];
+}
 
 function clampSidebarWidth(value: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)));
@@ -169,6 +285,12 @@ type DiagnosticsClientState = {
   model: string;
   timelineItems: number;
   streaming: boolean;
+  voice: {
+    supported: boolean;
+    enabled: boolean;
+    configured: boolean;
+    phase: VoicePhase;
+  };
 };
 
 type MenuSeparator = { type: "separator"; id: string };
@@ -526,6 +648,27 @@ export function App() {
   const socketRef = useRef<OctoCoderSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const voice = useVoiceAgent({
+    socketRef,
+    config: state.config?.voice || null,
+    agentBusy: state.streaming,
+    onTranscript: (text) => {
+      setInput(text);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    },
+    onAutoSubmitted: (text) => dispatch({ type: "send_user", content: text }),
+    onError: (message) => dispatch({ type: "notice", kind: "error", content: message })
+  });
+  const voiceHandlersRef = useRef({
+    onMessage: voice.handleServerMessage,
+    onAudio: voice.handleVoiceAudio,
+    onDisconnect: voice.handleDisconnect
+  });
+  voiceHandlersRef.current = {
+    onMessage: voice.handleServerMessage,
+    onAudio: voice.handleVoiceAudio,
+    onDisconnect: voice.handleDisconnect
+  };
 
   useEffect(() => {
     const socket = new OctoCoderSocket({
@@ -533,8 +676,15 @@ export function App() {
         dispatch({ type: "socket_open" });
         socket.send({ type: "config_get", data: {} });
       },
-      onClose: () => dispatch({ type: "socket_close" }),
-      onMessage: (message) => dispatch({ type: "server", message })
+      onClose: () => {
+        voiceHandlersRef.current.onDisconnect();
+        dispatch({ type: "socket_close" });
+      },
+      onMessage: (message) => {
+        voiceHandlersRef.current.onMessage(message);
+        dispatch({ type: "server", message });
+      },
+      onVoiceAudio: (metadata, data) => voiceHandlersRef.current.onAudio(metadata, data)
     });
     socketRef.current = socket;
     socket.connect();
@@ -576,6 +726,7 @@ export function App() {
   }, [state.timeline, state.selectedId]);
 
   const startNewTask = () => {
+    voice.handleDisconnect();
     dispatch({ type: "new_task" });
     setInput("");
     window.setTimeout(() => inputRef.current?.focus(), 0);
@@ -586,6 +737,7 @@ export function App() {
       socketRef.current?.send({ type: "project_clear", data: {} });
     }
     dispatch({ type: "default_chat" });
+    voice.handleDisconnect();
     setInput("");
     window.setTimeout(() => inputRef.current?.focus(), 0);
   };
@@ -593,8 +745,18 @@ export function App() {
   const sendMessage = () => {
     const content = input.trim();
     if (!content || state.streaming || !state.config?.ready) return;
+    const voiceRequestId = voice.pendingTranscriptRequestId;
+    const sent = socketRef.current?.send({
+      type: "user_message",
+      data: {
+        content,
+        source: voiceRequestId ? "voice" : "text",
+        voiceRequestId: voiceRequestId || undefined
+      }
+    });
+    if (!sent) return;
+    if (voiceRequestId) voice.markTranscriptSubmitted();
     dispatch({ type: "send_user", content });
-    socketRef.current?.send({ type: "user_message", data: { content } });
     setInput("");
   };
 
@@ -697,6 +859,7 @@ export function App() {
   };
 
   const clearInput = () => {
+    voice.discardTranscriptOrigin();
     setInput("");
     window.setTimeout(() => inputRef.current?.focus(), 0);
   };
@@ -753,7 +916,13 @@ export function App() {
         config: state.config,
         model: state.config?.provider?.model || T.modelNotConfigured,
         timelineItems: state.timeline.length,
-        streaming: state.streaming
+        streaming: state.streaming,
+        voice: {
+          supported: voice.supported,
+          enabled: Boolean(state.config?.voice?.enabled),
+          configured: Boolean(state.config?.voice?.configured),
+          phase: voice.phase
+        }
       });
       if (result && !result.canceled && result.filePath) {
         dispatch({ type: "notice", kind: "done", content: `${T.diagnosticsExported}: ${result.filePath}` });
@@ -934,9 +1103,26 @@ export function App() {
             model={state.config?.provider?.model || T.modelNotConfigured}
             disabled={state.streaming || state.connection !== "connected" || !state.config?.ready}
             streaming={state.streaming}
+            voicePhase={voice.phase}
+            voiceCaption={voice.caption}
+            voiceElapsed={voice.elapsedSeconds}
+            voiceMode={state.config?.voice?.mode || "hold"}
+            continuousEnabled={voice.continuousEnabled}
+            voiceAvailable={Boolean(
+              voice.supported &&
+              state.config?.voice?.enabled &&
+              state.config.voice.streamingConfigured &&
+              state.connection === "connected" &&
+              (state.config.voice.mode === "continuous" || !state.streaming)
+            )}
             onChange={setInput}
             onSubmit={sendMessage}
             onCancel={cancel}
+            onStartRecording={() => void voice.startRecording()}
+            onStopRecording={() => void voice.stopRecording()}
+            onCancelRecording={voice.cancelRecording}
+            onToggleContinuous={voice.toggleContinuous}
+            onStopPlayback={voice.stopPlayback}
           />
         </main>
       </div>
@@ -1547,19 +1733,63 @@ function Composer({
   model,
   disabled,
   streaming,
+  voicePhase,
+  voiceCaption,
+  voiceElapsed,
+  voiceMode,
+  continuousEnabled,
+  voiceAvailable,
   onChange,
   onSubmit,
-  onCancel
+  onCancel,
+  onStartRecording,
+  onStopRecording,
+  onCancelRecording,
+  onToggleContinuous,
+  onStopPlayback
 }: {
   inputRef: RefObject<HTMLTextAreaElement>;
   value: string;
   model: string;
   disabled: boolean;
   streaming: boolean;
+  voicePhase: VoicePhase;
+  voiceCaption: string;
+  voiceElapsed: number;
+  voiceMode: "hold" | "continuous";
+  continuousEnabled: boolean;
+  voiceAvailable: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onCancel: () => void;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+  onCancelRecording: () => void;
+  onToggleContinuous: () => void;
+  onStopPlayback: () => void;
 }) {
+  const voiceStatus = voicePhase === "requesting_permission"
+    ? T.requestingMicrophone
+    : voicePhase === "recording"
+      ? `${T.recording} ${Math.floor(voiceElapsed / 60)}:${String(voiceElapsed % 60).padStart(2, "0")}`
+      : voicePhase === "transcribing"
+        ? T.transcribing
+        : voicePhase === "connecting"
+          ? "正在连接实时识别"
+          : voicePhase === "listening"
+            ? "持续聆听中"
+            : voicePhase === "queued"
+              ? "已排队"
+              : voicePhase === "analyzing"
+                ? "正在分析"
+                : voicePhase === "executing"
+                  ? "正在执行"
+                  : voicePhase === "waiting_approval"
+                    ? "等待审批"
+        : voicePhase === "speaking"
+          ? T.speaking
+          : "";
+
   return (
     <footer className="composer">
       <textarea
@@ -1575,20 +1805,75 @@ function Composer({
           }
         }}
       />
+      {voiceCaption && <div className="voice-caption" aria-live="polite">{voiceCaption}</div>}
       <div className="composer-actions">
         <span className="model-chip" title={model}>
           {model}
           <ChevronDown size={14} />
         </span>
-        {streaming ? (
-          <button type="button" className="round-send stop-button" onClick={onCancel}>
-            <Square size={16} />
-          </button>
-        ) : (
-          <button type="button" className="round-send send-button" disabled={disabled || !value.trim()} onClick={onSubmit}>
-            <Send size={16} />
-          </button>
-        )}
+        <div className="composer-right">
+          {voiceStatus && <span className={`voice-status ${voicePhase}`}>{voiceStatus}</span>}
+          {voicePhase === "speaking" ? (
+            <button type="button" className="composer-icon voice-button active" onClick={onStopPlayback} title={T.stopPlayback} aria-label={T.stopPlayback}>
+              <VolumeX size={17} />
+            </button>
+          ) : (
+            <>
+              <button
+                key="voice-trigger"
+                type="button"
+                className={`composer-icon voice-button ${continuousEnabled ? "continuous" : ""} ${voiceMode === "hold" && (voicePhase === "requesting_permission" || voicePhase === "connecting" || voicePhase === "recording") ? "recording" : ""}`}
+                disabled={!voiceAvailable || (voiceMode === "hold"
+                  ? !["idle", "error", "requesting_permission", "connecting", "recording"].includes(voicePhase)
+                  : voicePhase === "requesting_permission")}
+                onClick={voiceMode === "continuous" ? onToggleContinuous : undefined}
+                onPointerDown={voiceMode === "hold" ? (event) => {
+                  if (event.button !== 0) return;
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  onStartRecording();
+                } : undefined}
+                onPointerUp={voiceMode === "hold" ? (event) => {
+                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                  onStopRecording();
+                } : undefined}
+                onPointerCancel={voiceMode === "hold" ? onCancelRecording : undefined}
+                onKeyDown={voiceMode === "hold" ? (event) => {
+                  if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                    event.preventDefault();
+                    onStartRecording();
+                  }
+                } : undefined}
+                onKeyUp={voiceMode === "hold" ? (event) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    onStopRecording();
+                  }
+                } : undefined}
+                title={voiceAvailable ? (voiceMode === "hold" ? "按住说话" : continuousEnabled ? "停止连续对话" : "开始连续对话") : T.voiceUnavailable}
+                aria-label={voiceAvailable ? (voiceMode === "hold" ? "按住说话" : "切换连续对话") : T.voiceUnavailable}
+              >
+                {voicePhase === "requesting_permission" || voicePhase === "connecting" ? <Loader2 size={17} /> : continuousEnabled ? <Square size={14} /> : <Mic size={17} />}
+              </button>
+              {voiceMode === "hold" && (voicePhase === "requesting_permission" || voicePhase === "connecting" || voicePhase === "recording") && (
+                <button type="button" className="composer-icon voice-button cancel-voice" onClick={onCancelRecording} title={T.cancelRecording} aria-label={T.cancelRecording}>
+                  <X size={15} />
+                </button>
+              )}
+            </>
+          )}
+          {streaming ? (
+            <button type="button" className="round-send stop-button" onClick={onCancel} title={T.cancel} aria-label={T.cancel}>
+              <Square size={16} />
+            </button>
+          ) : (
+            <button type="button" className="round-send send-button" disabled={disabled || !value.trim()} onClick={onSubmit} aria-label="Send">
+              <Send size={16} />
+            </button>
+          )}
+        </div>
       </div>
     </footer>
   );
@@ -1604,6 +1889,8 @@ function SettingsDialog({
   onSave: (payload: ConfigSavePayload) => void;
 }) {
   const provider = config?.provider;
+  const initialProfiles = editableVoiceProfiles(config?.voice);
+  const initialPrimaryId = config?.voice?.primaryAsrProfile || initialProfiles[0].id;
   const [form, setForm] = useState<ConfigSavePayload>({
     name: provider?.name || "deepseek",
     protocol: provider?.protocol || "openai-compat",
@@ -1613,10 +1900,34 @@ function SettingsDialog({
     thinking: provider?.thinking || false,
     contextWindow: provider?.contextWindow || 0,
     maxOutputTokens: provider?.maxOutputTokens || 0,
-    permissionMode: "default"
+    permissionMode: "default",
+    voice: {
+      provider: config?.voice?.provider || "openai-compatible",
+      enabled: config?.voice?.enabled || false,
+      baseUrl: config?.voice?.baseUrl || "https://api.openai.com/v1",
+      apiKey: "",
+      appId: "",
+      secretKey: "",
+      sttModel: config?.voice?.sttModel || "gpt-4o-mini-transcribe",
+      ttsModel: config?.voice?.ttsModel || "tts-1",
+      voice: config?.voice?.voice || "alloy",
+      language: config?.voice?.language || "",
+      autoSubmit: config?.voice?.autoSubmit ?? true,
+      mode: config?.voice?.mode || "hold",
+      primaryAsrProfile: initialPrimaryId,
+      fallbackAsrProfiles: config?.voice?.fallbackAsrProfiles || [],
+      ttsEnabled: config?.voice?.ttsEnabled || false,
+      ttsProfile: config?.voice?.ttsProfile || initialPrimaryId,
+      statusAnnouncements: config?.voice?.statusAnnouncements || false,
+      continuousSilenceMs: config?.voice?.continuousSilenceMs || 900,
+      profiles: initialProfiles
+    }
   });
+  const [selectedVoiceProfileId, setSelectedVoiceProfileId] = useState(initialPrimaryId);
 
   useEffect(() => {
+    const profiles = editableVoiceProfiles(config?.voice);
+    const primaryId = config?.voice?.primaryAsrProfile || profiles[0].id;
     setForm((current) => ({
       ...current,
       name: provider?.name || current.name,
@@ -1625,15 +1936,161 @@ function SettingsDialog({
       model: provider?.model || current.model,
       thinking: provider?.thinking || false,
       contextWindow: provider?.contextWindow || 0,
-      maxOutputTokens: provider?.maxOutputTokens || 0
+      maxOutputTokens: provider?.maxOutputTokens || 0,
+      voice: {
+        ...current.voice,
+        provider: config?.voice?.provider || current.voice.provider,
+        enabled: config?.voice?.enabled || false,
+        baseUrl: config?.voice?.baseUrl || current.voice.baseUrl,
+        sttModel: config?.voice?.sttModel || current.voice.sttModel,
+        ttsModel: config?.voice?.ttsModel || current.voice.ttsModel,
+        voice: config?.voice?.voice || current.voice.voice,
+        language: config?.voice?.language || "",
+        autoSubmit: config?.voice?.autoSubmit ?? true,
+        mode: config?.voice?.mode || "hold",
+        primaryAsrProfile: primaryId,
+        fallbackAsrProfiles: config?.voice?.fallbackAsrProfiles || [],
+        ttsEnabled: config?.voice?.ttsEnabled || false,
+        ttsProfile: config?.voice?.ttsProfile || primaryId,
+        statusAnnouncements: config?.voice?.statusAnnouncements || false,
+        continuousSilenceMs: config?.voice?.continuousSilenceMs || 900,
+        profiles
+      }
     }));
-  }, [provider]);
+    setSelectedVoiceProfileId(primaryId);
+  }, [config?.voice, provider]);
 
   const update = <K extends keyof ConfigSavePayload>(key: K, value: ConfigSavePayload[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const canSave = Boolean(form.name.trim() && form.baseUrl.trim() && form.model.trim() && (form.apiKey.trim() || provider?.apiKeyConfigured));
+  const updateVoice = <K extends keyof ConfigSavePayload["voice"]>(key: K, value: ConfigSavePayload["voice"][K]) => {
+    setForm((current) => ({ ...current, voice: { ...current.voice, [key]: value } }));
+  };
+
+  const updateVoiceProfile = <K extends keyof VoiceProviderSavePayload>(
+    key: K,
+    value: VoiceProviderSavePayload[K]
+  ) => {
+    setForm((current) => ({
+      ...current,
+      voice: {
+        ...current.voice,
+        profiles: current.voice.profiles.map((profile) =>
+          profile.id === selectedVoiceProfileId ? { ...profile, [key]: value } : profile
+        )
+      }
+    }));
+  };
+
+  const selectVoiceProvider = (providerId: VoiceProviderId) => {
+    const preset = VOICE_PROVIDER_PRESETS[providerId];
+    setForm((current) => ({ ...current, voice: {
+      ...current.voice,
+      profiles: current.voice.profiles.map((profile) => profile.id === selectedVoiceProfileId ? {
+        ...profile,
+        provider: providerId,
+        baseUrl: preset.baseUrl,
+        streamingUrl: preset.streamingUrl,
+        batchSttModel: preset.sttModel,
+        streamingSttModel: preset.streamingSttModel,
+        ttsModel: preset.ttsModel,
+        voice: preset.voice
+      } : profile)
+    }}));
+  };
+
+  const addVoiceProfile = () => {
+    const id = `profile-${Date.now()}`;
+    const preset = VOICE_PROVIDER_PRESETS.siliconflow;
+    const profile: VoiceProviderSavePayload = {
+      id,
+      name: "New Provider",
+      provider: "siliconflow",
+      baseUrl: preset.baseUrl,
+      streamingUrl: "",
+      workspaceId: "",
+      apiKey: "",
+      appId: "",
+      secretKey: "",
+      batchSttModel: preset.sttModel,
+      streamingSttModel: "",
+      ttsModel: preset.ttsModel,
+      voice: preset.voice,
+      language: ""
+    };
+    setForm((current) => ({ ...current, voice: {
+      ...current.voice,
+      profiles: [...current.voice.profiles, profile]
+    }}));
+    setSelectedVoiceProfileId(id);
+  };
+
+  const removeVoiceProfile = () => {
+    if (form.voice.profiles.length <= 1) return;
+    const remaining = form.voice.profiles.filter((profile) => profile.id !== selectedVoiceProfileId);
+    const nextId = remaining[0].id;
+    setForm((current) => ({ ...current, voice: {
+      ...current.voice,
+      profiles: remaining,
+      primaryAsrProfile: current.voice.primaryAsrProfile === selectedVoiceProfileId ? nextId : current.voice.primaryAsrProfile,
+      fallbackAsrProfiles: current.voice.fallbackAsrProfiles.filter((id) => id !== selectedVoiceProfileId),
+      ttsProfile: current.voice.ttsProfile === selectedVoiceProfileId ? nextId : current.voice.ttsProfile
+    }}));
+    setSelectedVoiceProfileId(nextId);
+  };
+
+  const moveVoiceProfile = (direction: -1 | 1) => {
+    setForm((current) => {
+      const profiles = [...current.voice.profiles];
+      const index = profiles.findIndex((profile) => profile.id === selectedVoiceProfileId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= profiles.length) return current;
+      [profiles[index], profiles[target]] = [profiles[target], profiles[index]];
+      const fallbackSet = new Set(current.voice.fallbackAsrProfiles);
+      return { ...current, voice: {
+        ...current.voice,
+        profiles,
+        fallbackAsrProfiles: profiles.filter((profile) => fallbackSet.has(profile.id)).map((profile) => profile.id)
+      }};
+    });
+  };
+
+  const selectedVoiceProfile = form.voice.profiles.find(
+    (profile) => profile.id === selectedVoiceProfileId
+  ) || form.voice.profiles[0];
+  const primaryVoiceProfile = form.voice.profiles.find(
+    (profile) => profile.id === form.voice.primaryAsrProfile
+  );
+  const storedPrimary = config?.voice?.profiles.find(
+    (profile) => profile.id === form.voice.primaryAsrProfile
+  );
+  const storedTts = config?.voice?.profiles.find(
+    (profile) => profile.id === form.voice.ttsProfile
+  );
+
+  const voiceCanSave = !form.voice.enabled || Boolean(
+    primaryVoiceProfile &&
+    primaryVoiceProfile.baseUrl.trim() &&
+    primaryVoiceProfile.streamingUrl.trim() &&
+    primaryVoiceProfile.batchSttModel.trim() &&
+    primaryVoiceProfile.streamingSttModel.trim() &&
+    (primaryVoiceProfile.apiKey.trim() || storedPrimary?.apiKeyConfigured) &&
+    (!form.voice.ttsEnabled || Boolean(
+      form.voice.ttsProfile &&
+      form.voice.profiles.some((profile) =>
+        profile.id === form.voice.ttsProfile && profile.ttsModel.trim() && profile.voice.trim()
+      ) &&
+      (form.voice.profiles.find((profile) => profile.id === form.voice.ttsProfile)?.apiKey.trim() || storedTts?.apiKeyConfigured)
+    ))
+  );
+  const canSave = Boolean(
+    form.name.trim() &&
+    form.baseUrl.trim() &&
+    form.model.trim() &&
+    (form.apiKey.trim() || provider?.apiKeyConfigured) &&
+    voiceCanSave
+  );
 
   return (
     <div className="dialog-backdrop" role="dialog" aria-modal="true" aria-label="Settings">
@@ -1732,6 +2189,169 @@ function SettingsDialog({
           <label className="check-row">
             <input type="checkbox" checked={form.thinking} onChange={(event) => update("thinking", event.target.checked)} />
             <span>Thinking</span>
+          </label>
+
+          <div className="settings-section-title">
+            <strong>{T.voiceSettings}</strong>
+            <span>{"\u591a\u5382\u5bb6\u8bed\u97f3\u8bc6\u522b\u4e0e\u5408\u6210"}</span>
+          </div>
+
+          <label className="check-row">
+            <input type="checkbox" checked={form.voice.enabled} onChange={(event) => updateVoice("enabled", event.target.checked)} />
+            <span>{T.enableVoice}</span>
+          </label>
+
+          <label>
+            <span>输入模式</span>
+            <select disabled={!form.voice.enabled} value={form.voice.mode} onChange={(event) => updateVoice("mode", event.target.value as "hold" | "continuous")}>
+              <option value="hold">按住说话</option>
+              <option value="continuous">连续对话</option>
+            </select>
+          </label>
+
+          <div className="voice-profile-toolbar wide">
+            <label>
+              <span>Provider Profile</span>
+              <select value={selectedVoiceProfileId} onChange={(event) => setSelectedVoiceProfileId(event.target.value)}>
+                {form.voice.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+              </select>
+            </label>
+            <button type="button" className="icon-button" onClick={addVoiceProfile} title="新增 Provider"><Plus size={15} /></button>
+            <button type="button" className="icon-button" onClick={() => moveVoiceProfile(-1)} title="上移"><ArrowUp size={15} /></button>
+            <button type="button" className="icon-button" onClick={() => moveVoiceProfile(1)} title="下移"><ArrowDown size={15} /></button>
+            <button type="button" className="icon-button" disabled={form.voice.profiles.length <= 1} onClick={removeVoiceProfile} title="移除 Provider"><Trash2 size={15} /></button>
+          </div>
+
+          <label>
+            <span>Profile 名称</span>
+            <input value={selectedVoiceProfile.name} onChange={(event) => updateVoiceProfile("name", event.target.value)} />
+          </label>
+
+          <label>
+            <span>Provider</span>
+            <select value={selectedVoiceProfile.provider} onChange={(event) => selectVoiceProvider(event.target.value as VoiceProviderId)}>
+              {(Object.entries(VOICE_PROVIDER_PRESETS) as Array<[VoiceProviderId, (typeof VOICE_PROVIDER_PRESETS)[VoiceProviderId]]>).map(([id, preset]) => (
+                <option key={id} value={id}>{preset.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="wide">
+            <span>Batch API Base URL</span>
+            <input disabled={!form.voice.enabled} value={selectedVoiceProfile.baseUrl} onChange={(event) => updateVoiceProfile("baseUrl", event.target.value)} />
+          </label>
+
+          <label className="wide">
+            <span>Realtime WebSocket URL</span>
+            <input disabled={!form.voice.enabled || selectedVoiceProfile.provider !== "aliyun"} value={selectedVoiceProfile.streamingUrl} onChange={(event) => updateVoiceProfile("streamingUrl", event.target.value)} />
+          </label>
+
+          <label>
+            <span>API Key / Access Token</span>
+            <input
+              type="password"
+              disabled={!form.voice.enabled}
+              value={selectedVoiceProfile.apiKey}
+              placeholder={config?.voice?.profiles.find((profile) => profile.id === selectedVoiceProfile.id)?.apiKeyConfigured ? "Already saved" : ""}
+              onChange={(event) => updateVoiceProfile("apiKey", event.target.value)}
+            />
+          </label>
+
+          {selectedVoiceProfile.provider === "aliyun" && (
+            <label>
+              <span>Workspace ID（可选）</span>
+              <input
+                disabled={!form.voice.enabled}
+                value={selectedVoiceProfile.workspaceId}
+                onChange={(event) => updateVoiceProfile("workspaceId", event.target.value)}
+              />
+            </label>
+          )}
+
+          {selectedVoiceProfile.provider === "volcengine" && (
+            <>
+              <label>
+                <span>App ID</span>
+                <input
+                  disabled={!form.voice.enabled}
+                  value={selectedVoiceProfile.appId}
+                  placeholder={config?.voice?.profiles.find((profile) => profile.id === selectedVoiceProfile.id)?.appIdConfigured ? "Already saved" : ""}
+                  onChange={(event) => updateVoiceProfile("appId", event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Secret Key（可选）</span>
+                <input type="password" disabled={!form.voice.enabled} value={selectedVoiceProfile.secretKey} onChange={(event) => updateVoiceProfile("secretKey", event.target.value)} />
+              </label>
+            </>
+          )}
+
+          <label>
+            <span>语言（可选）</span>
+            <input disabled={!form.voice.enabled} value={selectedVoiceProfile.language} placeholder="zh" onChange={(event) => updateVoiceProfile("language", event.target.value)} />
+          </label>
+
+          <label>
+            <span>Batch ASR Model</span>
+            <input disabled={!form.voice.enabled} value={selectedVoiceProfile.batchSttModel} onChange={(event) => updateVoiceProfile("batchSttModel", event.target.value)} />
+          </label>
+
+          <label>
+            <span>Realtime ASR Model</span>
+            <input disabled={!form.voice.enabled || selectedVoiceProfile.provider !== "aliyun"} value={selectedVoiceProfile.streamingSttModel} onChange={(event) => updateVoiceProfile("streamingSttModel", event.target.value)} />
+          </label>
+
+          <label>
+            <span>主 ASR Profile</span>
+            <select disabled={!form.voice.enabled} value={form.voice.primaryAsrProfile} onChange={(event) => updateVoice("primaryAsrProfile", event.target.value)}>
+              {form.voice.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+            </select>
+          </label>
+
+          <label>
+            <span>备用 ASR（按 Profile 顺序）</span>
+            <select multiple disabled={!form.voice.enabled} value={form.voice.fallbackAsrProfiles} onChange={(event) => updateVoice(
+              "fallbackAsrProfiles",
+              Array.from(event.target.selectedOptions).map((option) => option.value)
+            )}>
+              {form.voice.profiles.filter((profile) => profile.id !== form.voice.primaryAsrProfile).map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.name}</option>
+              ))}
+            </select>
+          </label>
+
+          {form.voice.mode === "continuous" && (
+            <label>
+              <span>静音结束阈值（ms）</span>
+              <input type="number" min={300} max={6000} disabled={!form.voice.enabled} value={form.voice.continuousSilenceMs} onChange={(event) => updateVoice("continuousSilenceMs", Number(event.target.value))} />
+            </label>
+          )}
+
+          <label className="check-row">
+            <input type="checkbox" checked={form.voice.ttsEnabled} disabled={!form.voice.enabled} onChange={(event) => updateVoice("ttsEnabled", event.target.checked)} />
+            <span>启用语音播报（可选）</span>
+          </label>
+
+          <label>
+            <span>TTS Profile</span>
+            <select disabled={!form.voice.enabled || !form.voice.ttsEnabled} value={form.voice.ttsProfile} onChange={(event) => updateVoice("ttsProfile", event.target.value)}>
+              {form.voice.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+            </select>
+          </label>
+
+          <label>
+            <span>TTS Model</span>
+            <input disabled={!form.voice.enabled || !form.voice.ttsEnabled} value={selectedVoiceProfile.ttsModel} onChange={(event) => updateVoiceProfile("ttsModel", event.target.value)} />
+          </label>
+
+          <label>
+            <span>Voice</span>
+            <input disabled={!form.voice.enabled || !form.voice.ttsEnabled} value={selectedVoiceProfile.voice} onChange={(event) => updateVoiceProfile("voice", event.target.value)} />
+          </label>
+
+          <label className="check-row">
+            <input type="checkbox" checked={form.voice.statusAnnouncements} disabled={!form.voice.enabled || !form.voice.ttsEnabled} onChange={(event) => updateVoice("statusAnnouncements", event.target.checked)} />
+            <span>播报任务状态</span>
           </label>
         </div>
 

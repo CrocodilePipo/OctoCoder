@@ -1,9 +1,10 @@
-import type { ClientMessage, ServerMessage } from "./types";
+import type { ClientMessage, ServerMessage, VoiceAudioMetadata } from "./types";
 
 export type SocketCallbacks = {
   onOpen: () => void;
   onClose: () => void;
   onMessage: (message: ServerMessage) => void;
+  onVoiceAudio: (metadata: VoiceAudioMetadata, data: ArrayBuffer) => void;
 };
 
 export class OctoCoderSocket {
@@ -11,6 +12,7 @@ export class OctoCoderSocket {
   private pingTimer = 0;
   private reconnectTimer = 0;
   private closedByUser = false;
+  private pendingVoiceAudio: VoiceAudioMetadata | null = null;
 
   constructor(private readonly callbacks: SocketCallbacks) {}
 
@@ -25,6 +27,7 @@ export class OctoCoderSocket {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = explicit || `${protocol}//${window.location.host}/ws`;
     this.socket = new WebSocket(url);
+    this.socket.binaryType = "arraybuffer";
 
     this.socket.onopen = () => {
       this.callbacks.onOpen();
@@ -32,15 +35,24 @@ export class OctoCoderSocket {
     };
 
     this.socket.onmessage = (event) => {
-      try {
-        this.callbacks.onMessage(JSON.parse(event.data) as ServerMessage);
-      } catch {
-        // Ignore malformed server messages; the backend logs its side.
+      if (typeof event.data === "string") {
+        try {
+          const message = JSON.parse(event.data) as ServerMessage;
+          if (message.type === "voice_audio_start") {
+            this.pendingVoiceAudio = message.data;
+          }
+          this.callbacks.onMessage(message);
+        } catch {
+          // Ignore malformed server messages; the backend logs its side.
+        }
+        return;
       }
+      void this.receiveBinary(event.data);
     };
 
     this.socket.onclose = () => {
       this.callbacks.onClose();
+      this.pendingVoiceAudio = null;
       this.clearTimers();
       if (!this.closedByUser) {
         this.reconnectTimer = window.setTimeout(() => this.connect(), 2_000);
@@ -55,9 +67,42 @@ export class OctoCoderSocket {
     this.socket = null;
   }
 
-  send(message: ClientMessage): void {
+  send(message: ClientMessage): boolean {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
+      return true;
+    }
+    return false;
+  }
+
+  sendBinary(data: ArrayBuffer | Blob): boolean {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(data);
+      return true;
+    }
+    return false;
+  }
+
+  sendVoiceFrame(requestId: string, sequence: number, data: ArrayBuffer): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify({
+      type: "voice_stream_chunk",
+      data: { requestId, sequence, byteLength: data.byteLength }
+    } satisfies ClientMessage));
+    this.socket.send(data);
+    return true;
+  }
+
+  private async receiveBinary(data: unknown): Promise<void> {
+    const metadata = this.pendingVoiceAudio;
+    this.pendingVoiceAudio = null;
+    if (!metadata) return;
+    if (data instanceof ArrayBuffer) {
+      this.callbacks.onVoiceAudio(metadata, data);
+      return;
+    }
+    if (data instanceof Blob) {
+      this.callbacks.onVoiceAudio(metadata, await data.arrayBuffer());
     }
   }
 

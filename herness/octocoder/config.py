@@ -137,6 +137,145 @@ class SandboxAppConfig:
 
 
 @dataclass
+class VoiceProviderProfile:
+    """One independently configured speech-provider account."""
+
+    id: str = "default"
+    name: str = "Default"
+    provider: str = "openai-compatible"
+    base_url: str = "https://api.openai.com/v1"
+    streaming_url: str = ""
+    workspace_id: str = ""
+    api_key: str = ""
+    app_id: str = ""
+    secret_key: str = ""
+    batch_stt_model: str = "gpt-4o-mini-transcribe"
+    streaming_stt_model: str = ""
+    tts_model: str = "tts-1"
+    voice: str = "alloy"
+    language: str = ""
+
+    def resolve_api_key(self) -> str:
+        return self.api_key or os.environ.get("OCTOCODER_VOICE_API_KEY", "")
+
+    def resolve_app_id(self) -> str:
+        return self.app_id or os.environ.get("OCTOCODER_VOICE_APP_ID", "")
+
+    def resolve_secret_key(self) -> str:
+        return self.secret_key or os.environ.get("OCTOCODER_VOICE_SECRET_KEY", "")
+
+    @property
+    def batch_asr_configured(self) -> bool:
+        return bool(
+            self.base_url
+            and self.resolve_api_key()
+            and self.batch_stt_model
+            and (self.provider != "volcengine" or self.resolve_app_id())
+        )
+
+    @property
+    def streaming_asr_configured(self) -> bool:
+        return bool(
+            self.provider == "aliyun"
+            and self.streaming_url
+            and self.resolve_api_key()
+            and self.streaming_stt_model
+        )
+
+    @property
+    def tts_configured(self) -> bool:
+        return bool(
+            self.base_url
+            and self.resolve_api_key()
+            and self.tts_model
+            and self.voice
+            and (self.provider != "volcengine" or self.resolve_app_id())
+        )
+
+
+@dataclass
+class VoiceConfig:
+    """ASR configuration with independently optional text-to-speech."""
+
+    provider: str = "openai-compatible"
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    api_key: str = ""
+    app_id: str = ""
+    secret_key: str = ""
+    stt_model: str = "gpt-4o-mini-transcribe"
+    tts_model: str = "tts-1"
+    voice: str = "alloy"
+    language: str = ""
+    auto_submit: bool = False
+    mode: str = "hold"
+    primary_asr_profile: str = "default"
+    fallback_asr_profiles: list[str] = field(default_factory=list)
+    tts_enabled: bool = False
+    tts_profile: str = ""
+    status_announcements: bool = False
+    continuous_silence_ms: int = 900
+    profiles: list[VoiceProviderProfile] = field(default_factory=list)
+    declared: bool = field(default=False, repr=False)
+    legacy: bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.profiles:
+            self.profiles = [
+                VoiceProviderProfile(
+                    id=self.primary_asr_profile or "default",
+                    name="Default",
+                    provider=self.provider,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    app_id=self.app_id,
+                    secret_key=self.secret_key,
+                    batch_stt_model=self.stt_model,
+                    tts_model=self.tts_model,
+                    voice=self.voice,
+                    language=self.language,
+                )
+            ]
+        if not self.primary_asr_profile:
+            self.primary_asr_profile = self.profiles[0].id
+
+    def get_profile(self, profile_id: str) -> VoiceProviderProfile | None:
+        return next((profile for profile in self.profiles if profile.id == profile_id), None)
+
+    @property
+    def primary_profile(self) -> VoiceProviderProfile:
+        return self.get_profile(self.primary_asr_profile) or self.profiles[0]
+
+    @property
+    def selected_tts_profile(self) -> VoiceProviderProfile | None:
+        if not self.tts_enabled:
+            return None
+        return self.get_profile(self.tts_profile)
+
+    def resolve_api_key(self) -> str:
+        return self.primary_profile.resolve_api_key()
+
+    def resolve_app_id(self) -> str:
+        return self.primary_profile.resolve_app_id()
+
+    def resolve_secret_key(self) -> str:
+        return self.primary_profile.resolve_secret_key()
+
+    @property
+    def configured(self) -> bool:
+        return self.primary_profile.batch_asr_configured
+
+    @property
+    def streaming_configured(self) -> bool:
+        return self.primary_profile.streaming_asr_configured
+
+    @property
+    def tts_configured(self) -> bool:
+        profile = self.selected_tts_profile
+        return bool(profile and profile.tts_configured)
+
+
+@dataclass
 class AppConfig:
     providers: list[ProviderConfig]
     permission_mode: str = "default"
@@ -148,6 +287,7 @@ class AppConfig:
     teammate_mode: str = ""
     enable_coordinator_mode: bool = False
     sandbox: SandboxAppConfig = field(default_factory=SandboxAppConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
 
 
 def _load_single_file(path: Path) -> AppConfig:
@@ -198,6 +338,60 @@ def _load_single_file(path: Path) -> AppConfig:
         network_enabled=sb["network_enabled"],
     )
 
+    voice = validated["voice"]
+    voice_profiles = [
+        VoiceProviderProfile(
+            id=profile["id"],
+            name=profile["name"],
+            provider=profile["provider"],
+            base_url=profile["base_url"],
+            streaming_url=profile["streaming_url"],
+            workspace_id=profile["workspace_id"],
+            api_key=profile["api_key"],
+            app_id=profile["app_id"],
+            secret_key=profile["secret_key"],
+            batch_stt_model=profile["batch_stt_model"],
+            streaming_stt_model=profile["streaming_stt_model"],
+            tts_model=profile["tts_model"],
+            voice=profile["voice"],
+            language=profile["language"],
+        )
+        for profile in voice["profiles"]
+    ]
+    voice_cfg = VoiceConfig(
+        provider=voice["provider"],
+        enabled=voice["enabled"],
+        base_url=voice["base_url"],
+        api_key=voice["api_key"],
+        app_id=voice["app_id"],
+        secret_key=voice["secret_key"],
+        stt_model=voice["stt_model"],
+        tts_model=voice["tts_model"],
+        voice=voice["voice"],
+        language=voice["language"],
+        auto_submit=voice["auto_submit"],
+        mode=voice["mode"],
+        primary_asr_profile=voice["primary_asr_profile"],
+        fallback_asr_profiles=voice["fallback_asr_profiles"],
+        tts_enabled=voice["tts_enabled"],
+        tts_profile=voice["tts_profile"],
+        status_announcements=voice["status_announcements"],
+        continuous_silence_ms=voice["continuous_silence_ms"],
+        profiles=voice_profiles,
+        declared=voice["_declared"],
+        legacy=voice["_legacy"],
+    )
+    if voice_cfg.enabled and not voice_cfg.configured:
+        raise ConfigError(
+            "Voice API key is required when voice is enabled "
+            "(set voice.api_key or OCTOCODER_VOICE_API_KEY)"
+        )
+    if voice_cfg.tts_enabled and not voice_cfg.tts_configured:
+        raise ConfigError(
+            "Voice TTS API key is required when TTS is enabled "
+            "(set the selected profile api_key or OCTOCODER_VOICE_API_KEY)"
+        )
+
     return AppConfig(
         providers=providers,
         permission_mode=validated["permission_mode"],
@@ -209,6 +403,7 @@ def _load_single_file(path: Path) -> AppConfig:
         teammate_mode=validated["teammate_mode"],
         enable_coordinator_mode=validated["enable_coordinator_mode"],
         sandbox=sandbox_cfg,
+        voice=voice_cfg,
     )
 
 
@@ -243,6 +438,8 @@ def _merge_config(base: AppConfig, override: AppConfig) -> AppConfig:
         base.sandbox.auto_allow = True
     if override.sandbox.network_enabled:
         base.sandbox.network_enabled = True
+    if override.voice.declared:
+        base.voice = override.voice
     return base
 
 

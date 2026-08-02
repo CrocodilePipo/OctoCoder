@@ -21,3 +21,19 @@ if (result.error) {
 if (result.status !== 0) {
   process.exit(result.status || 1);
 }
+
+const fs = require("node:fs");
+const requiredVoiceAssets = [
+  "vad.worklet.bundle.min.js",
+  "silero_vad_v5.onnx",
+  "ort-wasm-simd-threaded.mjs",
+  "ort-wasm-simd-threaded.wasm",
+  "octocoder-pcm-worklet.js"
+];
+for (const name of requiredVoiceAssets) {
+  const asset = path.join(clientRoot, "dist", "voice", name);
+  if (!fs.existsSync(asset)) {
+    console.error(`Missing built voice asset: ${asset}`);
+    process.exit(1);
+  }
+}

@@ -17,6 +17,57 @@ VALID_PERMISSION_MODES = {
 
 VALID_TEAMMATE_MODES = {"", "in-process"}
 
+VALID_VOICE_PROVIDERS = {
+    "openai",
+    "siliconflow",
+    "aliyun",
+    "volcengine",
+    "openai-compatible",
+}
+
+VOICE_PROVIDER_DEFAULTS = {
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "batch_stt_model": "gpt-4o-mini-transcribe",
+        "streaming_url": "",
+        "streaming_stt_model": "",
+        "tts_model": "tts-1",
+        "voice": "alloy",
+    },
+    "siliconflow": {
+        "base_url": "https://api.siliconflow.cn/v1",
+        "batch_stt_model": "FunAudioLLM/SenseVoiceSmall",
+        "streaming_url": "",
+        "streaming_stt_model": "",
+        "tts_model": "FunAudioLLM/CosyVoice2-0.5B",
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:anna",
+    },
+    "aliyun": {
+        "base_url": "https://dashscope.aliyuncs.com",
+        "batch_stt_model": "qwen3-asr-flash",
+        "streaming_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "streaming_stt_model": "qwen-audio-3.0-asr-flash-streaming",
+        "tts_model": "qwen-audio-3.0-tts-flash",
+        "voice": "longanhuan_v3.6",
+    },
+    "volcengine": {
+        "base_url": "https://openspeech.bytedance.com",
+        "batch_stt_model": "volc.bigasr.auc_turbo",
+        "streaming_url": "",
+        "streaming_stt_model": "",
+        "tts_model": "seed-tts-1.1",
+        "voice": "zh_female_cancan_mars_bigtts",
+    },
+    "openai-compatible": {
+        "base_url": "https://api.openai.com/v1",
+        "batch_stt_model": "gpt-4o-mini-transcribe",
+        "streaming_url": "",
+        "streaming_stt_model": "",
+        "tts_model": "tts-1",
+        "voice": "alloy",
+    },
+}
+
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 # 内置的"模型名子串 -> context window（最大输入 token 数）"映射表，
@@ -240,13 +291,217 @@ def validate_sandbox(raw_sb: dict | None) -> dict:
     return result
 
 
+def _voice_string(mapping: dict, key: str, default: str = "", *, path: str) -> str:
+    value = mapping.get(key, default)
+    if not isinstance(value, str):
+        raise ConfigError(f"'{path}.{key}' must be a string")
+    return value.strip()
+
+
+def _validate_voice_profile(raw: object, index: int) -> dict:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"'voice.profiles[{index}]' must be a mapping")
+    path = f"voice.profiles[{index}]"
+    profile_id = _voice_string(raw, "id", path=path)
+    if not profile_id:
+        raise ConfigError(f"'{path}.id' is required")
+    provider = _voice_string(raw, "provider", "openai-compatible", path=path)
+    if provider not in VALID_VOICE_PROVIDERS:
+        raise ConfigError(
+            "Invalid voice provider "
+            f"'{provider}', must be one of: {', '.join(sorted(VALID_VOICE_PROVIDERS))}"
+        )
+    defaults = VOICE_PROVIDER_DEFAULTS[provider]
+    profile = {
+        "id": profile_id,
+        "name": _voice_string(raw, "name", profile_id, path=path) or profile_id,
+        "provider": provider,
+        "base_url": _voice_string(raw, "base_url", defaults["base_url"], path=path),
+        "streaming_url": _voice_string(
+            raw, "streaming_url", defaults["streaming_url"], path=path
+        ),
+        "workspace_id": _voice_string(raw, "workspace_id", path=path),
+        "api_key": _voice_string(raw, "api_key", path=path),
+        "app_id": _voice_string(raw, "app_id", path=path),
+        "secret_key": _voice_string(raw, "secret_key", path=path),
+        "batch_stt_model": _voice_string(
+            raw,
+            "batch_stt_model",
+            _voice_string(raw, "stt_model", defaults["batch_stt_model"], path=path),
+            path=path,
+        ),
+        "streaming_stt_model": _voice_string(
+            raw, "streaming_stt_model", defaults["streaming_stt_model"], path=path
+        ),
+        "tts_model": _voice_string(raw, "tts_model", defaults["tts_model"], path=path),
+        "voice": _voice_string(raw, "voice", defaults["voice"], path=path),
+        "language": _voice_string(raw, "language", path=path),
+    }
+    if provider == "volcengine" and profile["app_id"] and not profile["app_id"].isdigit():
+        raise ConfigError(
+            "Volcengine App ID must contain digits only; "
+            "App ID and Access Token may be reversed"
+        )
+    return profile
+
+
+def _legacy_voice_profile(raw_voice: dict) -> dict:
+    provider = _voice_string(raw_voice, "provider", "openai-compatible", path="voice")
+    if provider not in VALID_VOICE_PROVIDERS:
+        raise ConfigError(
+            "Invalid voice provider "
+            f"'{provider}', must be one of: {', '.join(sorted(VALID_VOICE_PROVIDERS))}"
+        )
+    defaults = VOICE_PROVIDER_DEFAULTS[provider]
+    legacy = {
+        "id": "default",
+        "name": "Default",
+        "provider": provider,
+        "base_url": _voice_string(raw_voice, "base_url", defaults["base_url"], path="voice"),
+        "streaming_url": _voice_string(
+            raw_voice, "streaming_url", defaults["streaming_url"], path="voice"
+        ),
+        "workspace_id": _voice_string(raw_voice, "workspace_id", path="voice"),
+        "api_key": _voice_string(raw_voice, "api_key", path="voice"),
+        "app_id": _voice_string(raw_voice, "app_id", path="voice"),
+        "secret_key": _voice_string(raw_voice, "secret_key", path="voice"),
+        "batch_stt_model": _voice_string(
+            raw_voice,
+            "batch_stt_model",
+            _voice_string(raw_voice, "stt_model", defaults["batch_stt_model"], path="voice"),
+            path="voice",
+        ),
+        "streaming_stt_model": _voice_string(
+            raw_voice,
+            "streaming_stt_model",
+            defaults["streaming_stt_model"],
+            path="voice",
+        ),
+        "tts_model": _voice_string(raw_voice, "tts_model", defaults["tts_model"], path="voice"),
+        "voice": _voice_string(raw_voice, "voice", defaults["voice"], path="voice"),
+        "language": _voice_string(raw_voice, "language", path="voice"),
+    }
+    if provider == "volcengine" and legacy["app_id"] and not legacy["app_id"].isdigit():
+        raise ConfigError(
+            "Volcengine App ID must contain digits only; "
+            "App ID and Access Token may be reversed"
+        )
+    return legacy
+
+
+def validate_voice(raw_voice: dict | None) -> dict:
+    """Validate voice profiles while accepting the legacy single-provider shape."""
+    if raw_voice is None:
+        raw_voice = {}
+        declared = False
+    elif not isinstance(raw_voice, dict):
+        raise ConfigError("'voice' must be a mapping")
+    else:
+        declared = True
+
+    for key in ("enabled", "auto_submit", "tts_enabled", "status_announcements"):
+        if key in raw_voice and not isinstance(raw_voice[key], bool):
+            raise ConfigError(f"'voice.{key}' must be a boolean")
+
+    raw_profiles = raw_voice.get("profiles")
+    legacy = raw_profiles is None
+    if legacy:
+        profiles = [_legacy_voice_profile(raw_voice)]
+    else:
+        if not isinstance(raw_profiles, list) or not raw_profiles:
+            raise ConfigError("'voice.profiles' must be a non-empty list")
+        profiles = [_validate_voice_profile(entry, index) for index, entry in enumerate(raw_profiles)]
+
+    ids = [profile["id"] for profile in profiles]
+    if len(ids) != len(set(ids)):
+        raise ConfigError("'voice.profiles' contains duplicate profile IDs")
+
+    mode = _voice_string(raw_voice, "mode", "hold", path="voice")
+    if mode not in {"hold", "continuous"}:
+        raise ConfigError("'voice.mode' must be 'hold' or 'continuous'")
+    primary = _voice_string(raw_voice, "primary_asr_profile", ids[0], path="voice")
+    if primary not in ids:
+        raise ConfigError("'voice.primary_asr_profile' references an unknown profile")
+
+    raw_fallbacks = raw_voice.get("fallback_asr_profiles", [])
+    if not isinstance(raw_fallbacks, list) or any(
+        not isinstance(item, str) for item in raw_fallbacks
+    ):
+        raise ConfigError("'voice.fallback_asr_profiles' must be a list of strings")
+    fallbacks = [item.strip() for item in raw_fallbacks if item.strip()]
+    if len(fallbacks) != len(set(fallbacks)):
+        raise ConfigError("'voice.fallback_asr_profiles' contains duplicate profile IDs")
+    if any(item not in ids for item in fallbacks):
+        raise ConfigError("'voice.fallback_asr_profiles' references an unknown profile")
+
+    tts_enabled = bool(raw_voice.get("tts_enabled", False if legacy else False))
+    # Legacy voice always included TTS; preserve its runtime behavior after loading.
+    if legacy and declared:
+        tts_enabled = bool(raw_voice.get("tts_enabled", True))
+    tts_profile = _voice_string(
+        raw_voice, "tts_profile", primary if tts_enabled else "", path="voice"
+    )
+    if tts_profile and tts_profile not in ids:
+        raise ConfigError("'voice.tts_profile' references an unknown profile")
+    if tts_enabled and not tts_profile:
+        raise ConfigError("'voice.tts_profile' is required when TTS is enabled")
+
+    silence = raw_voice.get("continuous_silence_ms", 900)
+    if not isinstance(silence, int) or isinstance(silence, bool) or not 300 <= silence <= 6000:
+        raise ConfigError("'voice.continuous_silence_ms' must be an integer from 300 to 6000")
+
+    by_id = {profile["id"]: profile for profile in profiles}
+    primary_profile = by_id[primary]
+    if bool(raw_voice.get("enabled", False)):
+        missing = [
+            key
+            for key in ("base_url", "batch_stt_model")
+            if not primary_profile[key]
+        ]
+        if missing:
+            raise ConfigError("Voice ASR configuration is missing: " + ", ".join(missing))
+        if primary_profile["provider"] == "volcengine" and not primary_profile["app_id"]:
+            raise ConfigError("Voice configuration is missing: app_id")
+    if tts_enabled:
+        selected = by_id[tts_profile]
+        missing = [key for key in ("base_url", "tts_model", "voice") if not selected[key]]
+        if missing:
+            raise ConfigError("Voice TTS configuration is missing: " + ", ".join(missing))
+
+    # Compatibility fields let the existing batch adapters run until all call sites use profiles.
+    result = {
+        "provider": primary_profile["provider"],
+        "enabled": bool(raw_voice.get("enabled", False)),
+        "base_url": primary_profile["base_url"],
+        "api_key": primary_profile["api_key"],
+        "app_id": primary_profile["app_id"],
+        "secret_key": primary_profile["secret_key"],
+        "stt_model": primary_profile["batch_stt_model"],
+        "tts_model": by_id[tts_profile]["tts_model"] if tts_profile else "",
+        "voice": by_id[tts_profile]["voice"] if tts_profile else "",
+        "language": primary_profile["language"],
+        "auto_submit": bool(raw_voice.get("auto_submit", False)),
+        "mode": mode,
+        "primary_asr_profile": primary,
+        "fallback_asr_profiles": fallbacks,
+        "tts_enabled": tts_enabled,
+        "tts_profile": tts_profile,
+        "status_announcements": bool(raw_voice.get("status_announcements", False)),
+        "continuous_silence_ms": silence,
+        "profiles": profiles,
+        "_declared": declared,
+        "_legacy": legacy and declared,
+    }
+    return result
+
+
 def validate_config_structure(raw: object) -> dict:
     """校验的主入口。校验解析后的原始配置，返回清洗后的字典。
 
     返回的字典包含以下键：
         providers、permission_mode、mcp_servers、hooks、
         enable_fork、enable_verification_agent、worktree、
-        teammate_mode、enable_coordinator_mode、sandbox
+        teammate_mode、enable_coordinator_mode、sandbox、voice
     """
     if not isinstance(raw, dict) or "providers" not in raw:
         raise ConfigError("Config must contain a 'providers' list")
@@ -266,4 +521,5 @@ def validate_config_structure(raw: object) -> dict:
             raw.get("enable_coordinator_mode", False), "enable_coordinator_mode"
         ),
         "sandbox": validate_sandbox(raw.get("sandbox")),
+        "voice": validate_voice(raw.get("voice")),
     }

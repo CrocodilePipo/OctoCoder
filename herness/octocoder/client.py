@@ -8,6 +8,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
 
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -445,6 +446,8 @@ class OpenAIClient(LLMClient):
             raise NetworkError(f"Network error: {e}") from e
         except _openai.APIStatusError as e:
             raise LLMError(f"API error ({e.status_code}): {e.message}") from e
+        except httpx.TransportError as e:
+            raise NetworkError(f"Network stream interrupted: {e}") from e
 
 
 class OpenAICompatClient(LLMClient):
@@ -616,6 +619,8 @@ class OpenAICompatClient(LLMClient):
             raise NetworkError(f"Network error: {e}") from e
         except _openai.APIStatusError as e:
             raise LLMError(f"API error ({e.status_code}): {e.message}") from e
+        except httpx.TransportError as e:
+            raise NetworkError(f"Network stream interrupted: {e}") from e
 
 
 def create_client(config: ProviderConfig) -> LLMClient:

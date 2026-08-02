@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { fileURLToPath } = require("node:url");
 
 let mainWindow = null;
 let backendProcess = null;
@@ -339,6 +340,7 @@ async function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  installMediaPermissionPolicy(mainWindow);
 
   const devUrl = process.env.OCTOCODER_CLIENT_URL;
   const ws = `ws://127.0.0.1:${backendPort}/ws`;
@@ -353,6 +355,38 @@ async function createWindow() {
     }
     await mainWindow.loadFile(index, { query: { ws } });
   }
+}
+
+function isTrustedRenderer(webContents, requestingOrigin, details = {}) {
+  if (!mainWindow || webContents !== mainWindow.webContents) return false;
+  const currentUrl = String(details.requestingUrl || webContents.getURL() || "");
+  try {
+    const current = new URL(currentUrl);
+    const devUrl = process.env.OCTOCODER_CLIENT_URL;
+    if (devUrl) {
+      const expected = new URL(devUrl);
+      if (current.origin !== expected.origin) return false;
+      if (requestingOrigin && requestingOrigin !== "null" && new URL(requestingOrigin).origin !== expected.origin) return false;
+      return true;
+    }
+    if (current.protocol !== "file:") return false;
+    return path.resolve(fileURLToPath(current)) === path.resolve(clientIndexPath());
+  } catch {
+    return false;
+  }
+}
+
+function installMediaPermissionPolicy(window) {
+  const rendererSession = window.webContents.session;
+  rendererSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    if (permission !== "media" || !isTrustedRenderer(webContents, requestingOrigin, details)) return false;
+    return details?.mediaType !== "videoCapture";
+  });
+  rendererSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+    const audioOnly = mediaTypes.includes("audio") && !mediaTypes.includes("video");
+    callback(permission === "media" && audioOnly && isTrustedRenderer(webContents, details?.securityOrigin, details));
+  });
 }
 
 function installAppMenu() {
@@ -560,12 +594,95 @@ function installIpcHandlers() {
         resourcesPath: process.resourcesPath
       },
       recentProjects: readProjects(),
-      client: clientState || null
+      client: sanitizeDiagnosticsClientState(clientState)
     };
 
     fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), "utf8");
     return { canceled: false, filePath: result.filePath };
   });
+}
+
+function sanitizeDiagnosticsClientState(state) {
+  if (!state || typeof state !== "object") return null;
+  const config = state.config && typeof state.config === "object" ? state.config : null;
+  const provider = config?.provider && typeof config.provider === "object" ? config.provider : null;
+  const voice = config?.voice && typeof config.voice === "object" ? config.voice : null;
+  return {
+    generatedAt: String(state.generatedAt || ""),
+    connection: String(state.connection || ""),
+    cwd: String(state.cwd || ""),
+    workspace: state.workspace || null,
+    projects: Array.isArray(state.projects) ? state.projects : [],
+    model: String(state.model || ""),
+    timelineItems: Number(state.timelineItems || 0),
+    streaming: Boolean(state.streaming),
+    config: config ? {
+      ready: Boolean(config.ready),
+      configured: Boolean(config.configured),
+      error: String(config.error || ""),
+      message: String(config.message || ""),
+      configPath: String(config.configPath || ""),
+      cwd: String(config.cwd || ""),
+      provider: provider ? {
+        name: String(provider.name || ""),
+        protocol: String(provider.protocol || ""),
+        baseUrl: String(provider.baseUrl || ""),
+        model: String(provider.model || ""),
+        apiKeyConfigured: Boolean(provider.apiKeyConfigured),
+        thinking: Boolean(provider.thinking),
+        contextWindow: Number(provider.contextWindow || 0),
+        maxOutputTokens: Number(provider.maxOutputTokens || 0)
+      } : null,
+      voice: voice ? {
+        provider: String(voice.provider || "openai-compatible"),
+        enabled: Boolean(voice.enabled),
+        configured: Boolean(voice.configured),
+        baseUrl: String(voice.baseUrl || ""),
+        apiKeyConfigured: Boolean(voice.apiKeyConfigured),
+        appIdConfigured: Boolean(voice.appIdConfigured),
+        secretKeyConfigured: Boolean(voice.secretKeyConfigured),
+        sttModel: String(voice.sttModel || ""),
+        ttsModel: String(voice.ttsModel || ""),
+        voice: String(voice.voice || ""),
+        language: String(voice.language || ""),
+        autoSubmit: Boolean(voice.autoSubmit),
+        streamingConfigured: Boolean(voice.streamingConfigured),
+        ttsEnabled: Boolean(voice.ttsEnabled),
+        ttsConfigured: Boolean(voice.ttsConfigured),
+        mode: String(voice.mode || "hold"),
+        primaryAsrProfile: String(voice.primaryAsrProfile || ""),
+        fallbackAsrProfiles: Array.isArray(voice.fallbackAsrProfiles) ? voice.fallbackAsrProfiles.map(String) : [],
+        ttsProfile: String(voice.ttsProfile || ""),
+        statusAnnouncements: Boolean(voice.statusAnnouncements),
+        continuousSilenceMs: Number(voice.continuousSilenceMs || 0),
+        profiles: Array.isArray(voice.profiles) ? voice.profiles.map((profile) => ({
+          id: String(profile?.id || ""),
+          name: String(profile?.name || ""),
+          provider: String(profile?.provider || ""),
+          baseUrl: String(profile?.baseUrl || ""),
+          streamingUrl: String(profile?.streamingUrl || ""),
+          workspaceIdConfigured: Boolean(profile?.workspaceId),
+          apiKeyConfigured: Boolean(profile?.apiKeyConfigured),
+          appIdConfigured: Boolean(profile?.appIdConfigured),
+          secretKeyConfigured: Boolean(profile?.secretKeyConfigured),
+          batchSttModel: String(profile?.batchSttModel || ""),
+          streamingSttModel: String(profile?.streamingSttModel || ""),
+          ttsModel: String(profile?.ttsModel || ""),
+          voice: String(profile?.voice || ""),
+          language: String(profile?.language || ""),
+          batchAsrConfigured: Boolean(profile?.batchAsrConfigured),
+          streamingAsrConfigured: Boolean(profile?.streamingAsrConfigured),
+          ttsConfigured: Boolean(profile?.ttsConfigured)
+        })) : []
+      } : null
+    } : null,
+    voice: state.voice && typeof state.voice === "object" ? {
+      supported: Boolean(state.voice.supported),
+      enabled: Boolean(state.voice.enabled),
+      configured: Boolean(state.voice.configured),
+      phase: String(state.voice.phase || "idle")
+    } : null
+  };
 }
 
 async function boot() {
