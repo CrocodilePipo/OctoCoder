@@ -1,0 +1,46 @@
+schema_version: 1
+id: context-resume-divergence
+title: Resume divergence reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: before, action: checkpoint, checkpoint: before_resume}
+    - {id: resume, action: resume, checkpoint: after_resume}
+  facts:
+    - {id: project_name, value: alpha, required_at: [before_resume], hard_gate: true}
+  resumes:
+    - before_checkpoint: before_resume
+      after_checkpoint: after_resume
+      equivalent_fact_ids: [project_name]
+      equivalent_state_fields: [next_action]
+      hard_gate: true
+script:
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: before
+      checkpoint_id: before_resume
+      checkpoint:
+        id: before_resume
+        stage_id: before
+        facts: {project_name: alpha}
+        task_state: {next_action: run tests}
+    - type: context
+      event_type: session_resumed
+      stage_id: resume
+      checkpoint_id: after_resume
+      status: completed
+    - type: context
+      event_type: checkpoint
+      stage_id: resume
+      checkpoint_id: after_resume
+      source: resume
+      checkpoint:
+        id: after_resume
+        stage_id: resume
+        facts: {project_name: changed}
+        task_state: {next_action: ship}
+    - {type: result, result: resume diverged}

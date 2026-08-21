@@ -147,3 +147,44 @@ If the desktop app fails to start the backend:
 If `uv` is not recognized, add it to `PATH` or install it again from the official installer.
 
 If the installer build reports a metadata edit warning after writing artifacts, check whether the installer and unpacked app were still generated under `desktop/out/`.
+
+## Agent Evaluations and EDD
+
+OctoCoder includes a hybrid evaluation framework. `scripted` mode provides deterministic, offline PR gates; `real` mode runs the actual agent and model. Both modes share one event, trajectory, outcome, hard-gate, and reporting pipeline.
+
+Real runs work inside an isolated fixture while still discovering OctoCoder configuration from the directory that launched the evaluation and from the user configuration directory. Configuration files are never copied into fixtures or artifacts. Environment-based credentials must be explicitly named in the case `execution.env_allowlist`.
+
+```powershell
+cd herness
+uv run octocoder-eval validate --all
+uv run octocoder-eval run --suite smoke
+uv run octocoder-eval run --case reference-forbidden-tool
+uv run octocoder-eval compare ../evals/baselines/smoke.json ../evals/runs/<run>/suite-report.json
+```
+
+Cases live under `evals/cases/`, immutable fixtures under `evals/fixtures/`, and suites under `evals/suites/`. Every run writes the case snapshot, raw and normalized events, canonical tool trajectory, workspace patch, stderr, per-dimension check verdicts, and a Markdown report. Exit codes are `0` for success, `1` for evaluation failure, `2` for schema/framework errors, and `3` for baseline regressions.
+
+Trajectory expectations cover required and forbidden tools, argument operators, call counts, exact/subsequence order, failures, and repeated-call limits. Outcome checks cover command exits, file presence/content, Git diffs, and workspace boundaries.
+
+EDD rule: every agent behavior fix must first add a deterministic evaluation case that reproduces the defect.
+
+### Context Management Evaluations
+
+Context cases extend a normal evaluation case with an optional `context` field. Stages represent setup, pressure, checkpoints, and resume. YAML expectations declare facts, active and superseded instructions, task state, token tolerances, compression limits, and fields that must remain equivalent across resume. Scripted cases provide deterministic checkpoints; real cases ask the Agent for bounded JSON checkpoints.
+
+```powershell
+# Offline PR gate; no API key or network required
+uv run octocoder-eval run --suite context-smoke
+
+# Prove stale-value contamination is detected
+uv run octocoder-eval run --case context-stale-contamination
+
+# Explicit repeated real-provider probes; may incur provider charges
+uv run octocoder-eval run --suite context-nightly
+```
+
+The context dimension checks retention, instruction adherence, task continuity, resume consistency, token accuracy, compression behavior, and contamination separately. Critical fact or instruction loss, broken tool pairing, resume divergence, overflow, and stale-fact survival can be hard gates; any failed hard gate fails the run.
+
+Context runs add `context-events.jsonl`, `context-checkpoints.json`, and `context-metrics.json`. Reports expose duration, input/output tokens, token-estimation error, before/after compaction tokens, reclaimed tokens, retained tail, spilled characters, and compaction count. They do not calculate a 100-point total or average; only semantic similarity metrics use percentages, and unreported provider usage is shown as `n/a`. Suite thresholds use absolute increases in failures, milliseconds, tokens, calls, and turns, while similarity drops remain ratios.
+
+Real probes are excluded from pull requests by default. GitHub Actions runs them only when repository variable `OCTOCODER_REAL_CONTEXT_EVALS=true` and a schedule fires or `context-nightly` is selected manually. For every context-management defect, add a reproducing case under `evals/cases/context/` before changing the production algorithm.

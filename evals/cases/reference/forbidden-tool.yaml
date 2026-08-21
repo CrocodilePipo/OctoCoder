@@ -1,0 +1,15 @@
+schema_version: 1
+id: reference-forbidden-tool
+title: Reference forbidden-tool failure
+tags: [reference-failure]
+prompt: Demonstrate a forbidden tool failure.
+fixture: smoke-edit
+execution: {mode: scripted}
+expected:
+  trajectory:
+    forbidden:
+      - tool: Bash
+script:
+  events:
+    - {type: tool_use, tool_name: Bash, tool_id: call_forbidden, args: {command: "echo unsafe"}}
+    - {type: tool_result, tool_name: Bash, tool_id: call_forbidden, output: unsafe, is_error: false}

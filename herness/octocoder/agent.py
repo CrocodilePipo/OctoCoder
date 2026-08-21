@@ -23,6 +23,8 @@ from octocoder.context import (
     ContentReplacementRecord,
     ContentReplacementState,
     RecoveryState,
+    ContextLifecycleObservation,
+    ContextObserver,
     append_replacement_records,
     apply_tool_result_budget,
     auto_compact,
@@ -137,6 +139,12 @@ class HookEvent:
     success: bool
 
 
+@dataclass
+class ContextEventNotification:
+    event_type: str
+    payload: dict[str, Any]
+
+
 class PermissionResponse(Enum):
     ALLOW = "allow"
     DENY = "deny"
@@ -163,6 +171,7 @@ AgentEvent = (
     | PermissionRequest
     | CompactNotification
     | HookEvent
+    | ContextEventNotification
 )
 
 
@@ -313,6 +322,7 @@ class Agent:
         instructions_content: str = "",
         memory_manager: MemoryManager | None = None,
         hook_engine: HookEngine | None = None,
+        context_observer: ContextObserver | None = None,
     ) -> None:
         self.client = client
         self.registry = registry
@@ -359,10 +369,60 @@ class Agent:
         self._team_manager: Any = None
         self.notification_fn: Callable[[], list[str]] | None = None
         self.file_history: Any = None
+        self.context_stage_id = ""
+        self.context_checkpoint_id: str | None = None
+        self._external_context_observer = context_observer
+        self._context_notifications: list[ContextEventNotification] = []
 
         # 非阻塞 memory recall：prefetch task 与主 LLM 调用并行，工具执行后注入
         self.memory_recall_task: Any | None = None
         self._memory_recall_consumed: bool = False
+
+    def set_context_stage(
+        self,
+        stage_id: str,
+        checkpoint_id: str | None = None,
+    ) -> None:
+        self.context_stage_id = stage_id
+        self.context_checkpoint_id = checkpoint_id
+
+    def emit(self, event: ContextLifecycleObservation) -> None:
+        payload = dict(event.payload)
+        payload.update(
+            {
+                "stage_id": self.context_stage_id,
+                "checkpoint_id": self.context_checkpoint_id,
+                "agent_id": self.agent_id,
+                "parent_agent_id": self.parent_id,
+                "trace_id": self.trace_id,
+            }
+        )
+        enriched = ContextLifecycleObservation(event.event_type, payload)
+        self._context_notifications.append(
+            ContextEventNotification(event_type=event.event_type, payload=payload)
+        )
+        if self._external_context_observer is not None:
+            try:
+                self._external_context_observer.emit(enriched)
+            except Exception:
+                pass
+
+    def _drain_context_events(self) -> list[ContextEventNotification]:
+        events = self._context_notifications
+        self._context_notifications = []
+        return events
+
+    def _emit_context_callback(
+        self,
+        event_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        events = self._drain_context_events()
+        if event_callback is None:
+            return
+        for event in events:
+            event_callback(
+                {"type": "context", "event_type": event.event_type, **event.payload}
+            )
 
     @property
     def _transcript_path(self) -> str:
@@ -525,7 +585,7 @@ class Agent:
 
             # Layer 1: apply tool-result budget（就地修改 conversation）
             new_records = apply_tool_result_budget(
-                conversation, self.session_dir, self.replacement_state
+                conversation, self.session_dir, self.replacement_state, observer=self
             )
             if new_records:
                 append_replacement_records(self.session_dir, new_records)
@@ -542,7 +602,10 @@ class Agent:
                 recovery=self.recovery_state,
                 tool_schemas=self.registry.get_all_schemas(self.protocol),
                 transcript_path=self._transcript_path,
+                observer=self,
             )
+            for context_event in self._drain_context_events():
+                yield context_event
             if isinstance(compact_result, CompactEvent):
                 yield CompactNotification(
                     before_tokens=compact_result.before_tokens,
@@ -556,8 +619,10 @@ class Agent:
                 )
                 # 压缩后重新应用 budget（就地修改）
                 apply_tool_result_budget(
-                    conversation, self.session_dir, self.replacement_state
+                    conversation, self.session_dir, self.replacement_state, observer=self
                 )
+                for context_event in self._drain_context_events():
+                    yield context_event
             elif isinstance(compact_result, str):
                 yield ErrorEvent(message=compact_result)
 
@@ -677,7 +742,10 @@ class Agent:
                 response.output_tokens,
                 response.cache_read,
                 response.cache_creation,
+                observer=self,
             )
+            for context_event in self._drain_context_events():
+                yield context_event
 
             # 收集流式执行器中已提交的工具结果（工具在 LLM 流式输出期间已开始执行）
             tool_results: list[ToolResultBlock] = []
@@ -1015,6 +1083,7 @@ class Agent:
             recovery=self.recovery_state,
             tool_schemas=self.registry.get_all_schemas(self.protocol),
             transcript_path=self._transcript_path,
+            observer=self,
         )
         if isinstance(result, CompactEvent):
             env_context = build_environment_context(
@@ -1089,7 +1158,7 @@ class Agent:
 
             # 先应用 tool-result budget（就地修改），再做 auto-compact，确保预算内的结果不会被误压缩
             pre_compact_records = apply_tool_result_budget(
-                conversation, self.session_dir, self.replacement_state
+                conversation, self.session_dir, self.replacement_state, observer=self
             )
             if pre_compact_records:
                 append_replacement_records(self.session_dir, pre_compact_records)
@@ -1104,7 +1173,9 @@ class Agent:
                 recovery=self.recovery_state,
                 tool_schemas=self.registry.get_all_schemas(self.protocol),
                 transcript_path=self._transcript_path,
+                observer=self,
             )
+            self._emit_context_callback(event_callback)
             if isinstance(compact_result, CompactEvent):
                 conversation.inject_environment(env_context)
 
@@ -1119,8 +1190,9 @@ class Agent:
 
             # 压缩后或追加 deferred 提示后重新应用 budget（就地修改）
             _new_records = apply_tool_result_budget(
-                conversation, self.session_dir, self.replacement_state
+                conversation, self.session_dir, self.replacement_state, observer=self
             )
+            self._emit_context_callback(event_callback)
             if _new_records:
                 append_replacement_records(self.session_dir, _new_records)
 
@@ -1179,7 +1251,9 @@ class Agent:
                 response.output_tokens,
                 response.cache_read,
                 response.cache_creation,
+                observer=self,
             )
+            self._emit_context_callback(event_callback)
 
             tool_results: list[ToolResultBlock] = []
             for tc in response.tool_calls:

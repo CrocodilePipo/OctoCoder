@@ -1,0 +1,12 @@
+schema_version: 1
+id: release
+description: Deterministic release gate with repeated runs.
+include_tags: [release]
+repeat: 5
+thresholds:
+  failed_runs_increase: 0
+  duration_increase_ms: 2000
+  input_tokens_increase: 2000
+  output_tokens_increase: 500
+  tool_calls_increase: 1
+  turns_increase: 1

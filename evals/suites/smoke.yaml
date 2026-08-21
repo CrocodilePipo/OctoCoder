@@ -1,0 +1,12 @@
+schema_version: 1
+id: smoke
+description: Fast deterministic CI gate without network or credentials.
+include_tags: [smoke]
+repeat: 1
+thresholds:
+  failed_runs_increase: 0
+  duration_increase_ms: 5000
+  input_tokens_increase: 5000
+  output_tokens_increase: 1000
+  tool_calls_increase: 2
+  turns_increase: 2

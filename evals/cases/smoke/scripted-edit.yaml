@@ -1,0 +1,81 @@
+schema_version: 1
+id: scripted-edit
+title: Scripted file edit
+description: Deterministic end-to-end smoke case for the evaluation pipeline.
+tags: [smoke, nightly, release, deterministic]
+prompt: Change README status from pending to complete.
+fixture: smoke-edit
+execution:
+  mode: scripted
+  permission_mode: bypassPermissions
+limits:
+  timeout_seconds: 30
+  max_turns: 3
+  max_tool_calls: 4
+expected:
+  trajectory:
+    match: subsequence
+    required:
+      - tool: ReadFile
+        arguments:
+          - path: path
+            operator: equals
+            value: README.md
+      - tool: WriteFile
+        arguments:
+          - path: path
+            operator: equals
+            value: README.md
+    forbidden:
+      - tool: Bash
+    order: [ReadFile, WriteFile]
+    max_total_calls: 3
+    max_failed_calls: 0
+    max_repeated_identical_calls: 1
+  outcome:
+    - id: readme-exists
+      type: file_exists
+      path: README.md
+    - id: status-complete
+      type: file_contains
+      path: README.md
+      text: "Status: complete"
+    - id: diff-recorded
+      type: diff_contains
+      text: "+Status: complete"
+    - id: workspace-contained
+      type: workspace_boundary
+script:
+  events:
+    - type: tool_use
+      tool_name: ReadFile
+      tool_id: call_scripted_read
+      args: {path: README.md}
+    - type: tool_result
+      tool_name: ReadFile
+      tool_id: call_scripted_read
+      output: "# Tiny Project\n\nStatus: pending\n"
+      is_error: false
+      elapsed_ms: 2
+    - type: tool_use
+      tool_name: WriteFile
+      tool_id: call_scripted_write
+      args: {path: README.md, content: "# Tiny Project\n\nStatus: complete\n"}
+    - type: tool_result
+      tool_name: WriteFile
+      tool_id: call_scripted_write
+      output: Updated README.md
+      is_error: false
+      elapsed_ms: 3
+    - type: result
+      result: Updated the project status.
+      num_turns: 1
+      provider: scripted
+      model: deterministic
+      usage: {input_tokens: 40, output_tokens: 12}
+  effects:
+    - type: write
+      path: README.md
+      content: "# Tiny Project\n\nStatus: complete\n"
+  final_response: Updated the project status.
+  duration_ms: 10

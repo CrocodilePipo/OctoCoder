@@ -28,6 +28,11 @@ from octocoder.context.manager import (
     load_replacement_records,
     reconstruct_replacement_state,
 )
+from octocoder.context_observer import (
+    ContextLifecycleObservation,
+    ContextObserver,
+    NullContextObserver,
+)
 
 
 __all__ = [
@@ -44,6 +49,9 @@ __all__ = [
     "append_replacement_records",
     "apply_tool_result_budget",
     "auto_compact",
+    "ContextLifecycleObservation",
+    "ContextObserver",
+    "NullContextObserver",
     "build_compact_messages",
     "build_recovery_attachment",
     "cleanup_tool_results",
@@ -54,4 +62,3 @@ __all__ = [
     "load_replacement_records",
     "reconstruct_replacement_state",
 ]
-

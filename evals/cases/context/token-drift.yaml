@@ -1,0 +1,27 @@
+schema_version: 1
+id: context-token-drift
+title: Token estimation drift reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: pressure, action: pressure, prompt: Add pressure}
+    - {id: probe, action: checkpoint, checkpoint: after}
+  token:
+    max_absolute_error_tokens: 1000
+    trigger_tolerance_tokens: 1000
+    require_provider_anchor: true
+    hard_gate: true
+script:
+  events:
+    - {type: context, event_type: usage_anchor, stage_id: pressure, estimated_tokens: 50000, provider_tokens: 100000}
+    - {type: context, event_type: compact_started, stage_id: pressure, context_window: 200000, threshold_tokens: 187000, estimated_tokens: 210000}
+    - {type: context, event_type: compact_completed, stage_id: pressure, context_window: 200000, before_tokens: 210000, after_tokens: 40000, boundary_id: drift}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint: {id: after, stage_id: probe}
+    - {type: result, result: token drift}

@@ -1,0 +1,28 @@
+schema_version: 1
+id: context-ineffective-compaction
+title: Ineffective compaction reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: pressure, action: pressure, prompt: Add pressure}
+    - {id: probe, action: checkpoint, checkpoint: after}
+  compression:
+    min_reclaimed_tokens: 100000
+    max_after_tokens: 50000
+    max_retained_tokens: 10000
+    min_compactions: 1
+    max_compactions: 1
+    hard_gate: true
+script:
+  events:
+    - {type: context, event_type: compact_started, stage_id: pressure, before_tokens: 190000}
+    - {type: context, event_type: compact_completed, stage_id: pressure, before_tokens: 190000, after_tokens: 185000, retained_tokens: 50000, boundary_id: ineffective}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint: {id: after, stage_id: probe}
+    - {type: result, result: ineffective}

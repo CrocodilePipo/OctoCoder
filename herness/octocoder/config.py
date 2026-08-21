@@ -449,7 +449,8 @@ def load_config(path: Path | None = None) -> AppConfig:
             raise ConfigError(f"Config file not found: {path}")
         return _load_single_file(path)
 
-    cwd = Path.cwd()
+    config_cwd = os.environ.get("OCTOCODER_CONFIG_CWD", "")
+    cwd = Path(config_cwd).resolve() if config_cwd else Path.cwd()
     home = Path.home()
     candidates = [
         home / ".octocoder" / "config.yaml",

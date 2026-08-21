@@ -1,0 +1,12 @@
+schema_version: 1
+id: nightly
+description: Repeated deterministic nightly suite; real cases can be added with explicit credentials.
+include_tags: [nightly]
+repeat: 3
+thresholds:
+  failed_runs_increase: 0
+  duration_increase_ms: 10000
+  input_tokens_increase: 10000
+  output_tokens_increase: 2000
+  tool_calls_increase: 5
+  turns_increase: 5

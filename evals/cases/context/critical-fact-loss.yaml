@@ -1,0 +1,20 @@
+schema_version: 1
+id: context-critical-fact-loss
+title: Critical fact loss reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: probe, action: checkpoint, checkpoint: after}
+  facts:
+    - {id: project_name, value: alpha, required_at: [after], hard_gate: true}
+script:
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint: {id: after, stage_id: probe, facts: {}}
+    - {type: result, result: missing fact}

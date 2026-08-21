@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import string
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from octocoder.conversation import ConversationManager, Message, ToolResultBlock, ToolUseBlock
+from octocoder.context_observer import ContextObserver, observe
 
 SESSIONS_DIR = ".octocoder/sessions"
 DEFAULT_MAX_AGE_DAYS = 30
@@ -466,9 +468,10 @@ def _generate_session_id() -> str:
 
 
 class SessionManager:
-    def __init__(self, work_dir: str) -> None:
+    def __init__(self, work_dir: str, observer: ContextObserver | None = None) -> None:
         self._sessions_dir = Path(work_dir) / SESSIONS_DIR
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._observer = observer
 
 
     def create(self) -> Session:
@@ -495,15 +498,22 @@ class SessionManager:
         metas.sort(key=lambda m: m.last_active, reverse=True)
         return metas
 
-    def resume(self, session_id: str) -> ResumeResult | None:
+    def resume(
+        self,
+        session_id: str,
+        observer: ContextObserver | None = None,
+    ) -> ResumeResult | None:
+        active_observer = observer or self._observer
         jsonl_path = self._sessions_dir / f"{session_id}.jsonl"
         meta_path = self._sessions_dir / f"{session_id}.meta"
 
         if not jsonl_path.exists():
+            observe(active_observer, "session_resumed", status="missing")
             return None
 
         meta = SessionMeta.load(meta_path)
         if meta is None:
+            observe(active_observer, "session_resumed", status="malformed_meta")
             return None
 
         records: list[SessionRecord] = []
@@ -524,12 +534,40 @@ class SessionManager:
         for i, rec in enumerate(records):
             if rec.type == RecordType.COMPACT_BOUNDARY:
                 last_boundary = i
+        boundary_id = ""
+        boundary_summary_hash = ""
+        retained_messages = 0
+        malformed_boundary = False
         if last_boundary >= 0:
+            boundary = records[last_boundary]
+            malformed_boundary = not (
+                isinstance(boundary.content, dict)
+                and isinstance(boundary.content.get("summary", ""), str)
+                and isinstance(boundary.content.get("keep", []), list)
+            )
+            canonical = json.dumps(
+                boundary.content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            boundary_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+            summary, retained = parse_compact_boundary(boundary)
+            boundary_summary_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+            retained_messages = len(retained)
             records = records[last_boundary:]
 
         valid_count = validate_message_chain(records)
         records = records[:valid_count]
         messages = records_to_messages(records)
+        replacement_count = sum(
+            1
+            for record in records
+            if record.type == RecordType.TOOL_RESULT
+            and isinstance(record.content, str)
+            and record.content.startswith("<persisted-output>")
+        )
 
         file = open(jsonl_path, "a", encoding="utf-8")  # noqa: SIM115
         session = Session(
@@ -537,6 +575,18 @@ class SessionManager:
             file=file,
             meta=meta,
             sessions_dir=self._sessions_dir,
+        )
+
+        observe(
+            active_observer,
+            "session_resumed",
+            status="degraded" if malformed_boundary else "completed",
+            boundary_id=boundary_id,
+            summary_hash=boundary_summary_hash,
+            restored_messages=len(messages),
+            retained_messages=retained_messages,
+            replacement_count=replacement_count,
+            valid_records=valid_count,
         )
 
         return ResumeResult(

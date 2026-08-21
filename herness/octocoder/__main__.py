@@ -7,11 +7,44 @@ import logging
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
+from typing import IO, Callable
 
 from octocoder.config import ConfigError, load_config
 from octocoder.hooks import HookConfigError, HookEngine, load_hooks
 from octocoder.permissions import PermissionMode
+
+
+class StructuredEventEmitter:
+    """Emit backward-compatible NDJSON with stable run metadata."""
+
+    def __init__(
+        self,
+        stream: IO[str] | None = None,
+        *,
+        run_id: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.stream = stream or sys.stdout
+        self.run_id = run_id or os.environ.get("OCTOCODER_EVAL_RUN_ID") or uuid.uuid4().hex
+        self.clock = clock
+        self.started = clock()
+        self.sequence = 0
+        self.turn = 0
+
+    def emit(self, obj: dict) -> None:
+        event = dict(obj)
+        event.setdefault("sequence", self.sequence)
+        event.setdefault("run_id", self.run_id)
+        event.setdefault("timestamp_ms", max(0, int((self.clock() - self.started) * 1000)))
+        event.setdefault("turn", self.turn)
+        event.setdefault("agent_id", "lead")
+        print(json.dumps(event, ensure_ascii=False), file=self.stream, flush=True)
+        self.sequence += 1
+
+    def complete_turn(self, turn: int) -> None:
+        self.turn = max(self.turn, turn)
 
 
 def main() -> None:
@@ -127,9 +160,63 @@ def main() -> None:
 
 
 async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_format: str = "text") -> None:
+    from octocoder.noninteractive import NonInteractiveSession
+
+    is_json = output_format == "stream-json"
+    event_emitter = StructuredEventEmitter() if is_json else None
+
+    def event_sink(event: dict) -> None:
+        assert event_emitter is not None
+        event_emitter.emit(event)
+        if event.get("type") == "turn_complete":
+            event_emitter.complete_turn(int(event.get("turn", 0)))
+
+    session = await NonInteractiveSession.create(
+        config,
+        permission_mode,
+        hook_engine,
+        event_sink=event_sink if is_json else None,
+    )
+    try:
+        result = await session.run_turn(prompt)
+        if not is_json:
+            print(result.text, end="", flush=True)
+
+        for _ in range(90):
+            if not session.team_manager._teams:
+                break
+            await asyncio.sleep(2)
+            notes: list[str] = []
+            for task in session.task_manager.poll_completed():
+                notes.append(
+                    f"<task-notification>\n<task_id>{task.id}</task_id>\n"
+                    f"<status>{task.status}</status>\n<result>{task.result}</result>\n"
+                    f"</task-notification>"
+                )
+            notes.extend(session.team_manager.drain_lead_mailbox())
+            running = any(
+                not task.done() for task in session.task_manager._async_tasks.values()
+            )
+            if not notes and not running:
+                break
+            if not notes:
+                continue
+            for note in notes:
+                session.conversation.add_system_reminder(note)
+            follow_up = await session.run_turn(
+                "Teammate notifications received. Process them and continue.",
+                stage_id="team_follow_up",
+            )
+            if not is_json:
+                print(follow_up.text, flush=True)
+    finally:
+        await session.close()
+    return
+
     from octocoder.agent import (
         Agent,
         CompactNotification,
+        ContextEventNotification,
         ErrorEvent,
         LoopComplete,
         PermissionRequest,
@@ -166,9 +253,12 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
     is_json = output_format == "stream-json"
 
+    event_emitter = StructuredEventEmitter() if is_json else None
+
     def emit_json(obj: dict) -> None:
         """输出一行 NDJSON 到 stdout"""
-        print(json.dumps(obj, ensure_ascii=False), flush=True)
+        assert event_emitter is not None
+        event_emitter.emit(obj)
 
     provider = config.providers[0]
     client = create_client(provider)
@@ -308,6 +398,7 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
         elif isinstance(event, TurnComplete):
             if is_json:
                 emit_json({"type": "turn_complete", "turn": event.turn})
+                event_emitter.complete_turn(event.turn)
 
         elif isinstance(event, LoopComplete):
             # 最终结果：stream-json 输出 result 行，text 模式直接打印文本
@@ -323,6 +414,26 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
                         "input_tokens": total_input,
                         "output_tokens": total_output,
                     },
+                    "provider": provider.name,
+                    "model": provider.model,
+                    "agent_trace_summary": {
+                        "lead_agent_id": "lead",
+                        "tool_call_count": len(tool_calls),
+                        "failed_tool_call_count": sum(1 for call in tool_calls if call["is_error"]),
+                        "agents": [
+                            {
+                                "agent_id": node.agent_id,
+                                "parent_agent_id": node.parent_id,
+                                "trace_id": node.trace_id,
+                                "agent_type": node.agent_type,
+                                "status": node.status,
+                                "input_tokens": node.input_tokens,
+                                "output_tokens": node.output_tokens,
+                                "tool_call_count": node.tool_call_count,
+                            }
+                            for node in trace_manager._nodes.values()
+                        ],
+                    },
                     "stop_reason": "end_turn",
                 })
             else:
@@ -337,7 +448,19 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
         elif isinstance(event, CompactNotification):
             if is_json:
-                emit_json({"type": "compact", "message": event.message})
+                emit_json({
+                    "type": "compact",
+                    "message": event.message,
+                    "before_tokens": event.before_tokens,
+                })
+
+        elif isinstance(event, ContextEventNotification):
+            if is_json:
+                emit_json({
+                    "type": "context",
+                    "event_type": event.event_type,
+                    **event.payload,
+                })
 
         elif isinstance(event, RetryEvent):
             if is_json:
@@ -345,7 +468,20 @@ async def _run_prompt(config, permission_mode, hook_engine, prompt: str, output_
 
         elif isinstance(event, PermissionRequest):
             # -p 非交互模式：自动批准所有权限请求
+            if is_json:
+                emit_json({
+                    "type": "permission_request",
+                    "tool_name": event.tool_name,
+                    "description": event.description,
+                })
             event.future.set_result(PermissionResponse.ALLOW)
+            if is_json:
+                emit_json({
+                    "type": "permission_decision",
+                    "tool_name": event.tool_name,
+                    "decision": PermissionResponse.ALLOW.value,
+                    "source": "non_interactive",
+                })
 
     # 如果有 team 在运行，轮询等待 teammate 完成
     if not team_manager._teams:

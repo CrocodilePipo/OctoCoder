@@ -1,0 +1,14 @@
+schema_version: 1
+id: context-nightly
+description: Optional repeated real-provider probes; may incur provider cost.
+cases: [context-retention-real, context-semantic-retention-real]
+repeat: 3
+thresholds:
+  failed_runs_increase: 0
+  context_retention_drop: 0.1
+  context_resume_drop: 0.1
+  context_token_error_increase_tokens: 2000
+  context_reclaimed_tokens_drop: 50000
+  context_retained_tokens_increase: 5000
+  context_compaction_count_increase: 2
+  context_contamination_increase: 0

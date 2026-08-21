@@ -1,0 +1,68 @@
+schema_version: 1
+id: context-multi-agent-isolation
+title: Agent contexts remain isolated
+description: Two agents retain their own facts and instructions without cross-agent leakage, including one agent restart.
+tags: [context, context-stress, multi-agent, isolation]
+prompt: Execute the multi-agent isolation scenario.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: alpha_probe, action: checkpoint, checkpoint: alpha_after}
+    - {id: beta_probe, action: checkpoint, checkpoint: beta_after}
+    - {id: alpha_resume, action: resume, checkpoint: alpha_resumed}
+  facts:
+    - {id: alpha_ticket, value: ALPHA-17, required_at: [alpha_after, alpha_resumed], forbidden_at: [beta_after], hard_gate: true}
+    - {id: beta_ticket, value: BETA-29, required_at: [beta_after], forbidden_at: [alpha_after, alpha_resumed], hard_gate: true}
+  instructions:
+    - {id: alpha_scope, text: Work only on alpha.py, priority: task, active_at: [alpha_after, alpha_resumed], superseded_at: [beta_after], hard_gate: true}
+    - {id: beta_scope, text: Work only on beta.py, priority: task, active_at: [beta_after], superseded_at: [alpha_after, alpha_resumed], hard_gate: true}
+  resumes:
+    - before_checkpoint: alpha_after
+      after_checkpoint: alpha_resumed
+      equivalent_fact_ids: [alpha_ticket]
+      equivalent_instruction_ids: [alpha_scope]
+      equivalent_state_fields: [next_action]
+      hard_gate: true
+script:
+  duration_ms: 30
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: alpha_probe
+      checkpoint_id: alpha_after
+      agent_id: agent-alpha
+      parent_agent_id: lead
+      checkpoint:
+        id: alpha_after
+        stage_id: alpha_probe
+        facts: {alpha_ticket: ALPHA-17}
+        active_instructions: [alpha_scope, Work only on alpha.py]
+        task_state: {next_action: edit alpha.py}
+    - type: context
+      event_type: checkpoint
+      stage_id: beta_probe
+      checkpoint_id: beta_after
+      agent_id: agent-beta
+      parent_agent_id: lead
+      checkpoint:
+        id: beta_after
+        stage_id: beta_probe
+        facts: {beta_ticket: BETA-29}
+        active_instructions: [beta_scope, Work only on beta.py]
+        task_state: {next_action: edit beta.py}
+    - {type: context, event_type: session_resumed, stage_id: alpha_resume, checkpoint_id: alpha_resumed, agent_id: agent-alpha, parent_agent_id: lead, status: completed}
+    - type: context
+      event_type: checkpoint
+      stage_id: alpha_resume
+      checkpoint_id: alpha_resumed
+      agent_id: agent-alpha
+      parent_agent_id: lead
+      source: resume
+      checkpoint:
+        id: alpha_resumed
+        stage_id: alpha_resume
+        facts: {alpha_ticket: ALPHA-17}
+        active_instructions: [alpha_scope, Work only on alpha.py]
+        task_state: {next_action: edit alpha.py}
+    - {type: result, result: Agent contexts isolated, provider: scripted, model: deterministic, num_turns: 3}

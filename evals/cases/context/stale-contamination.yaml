@@ -1,0 +1,24 @@
+schema_version: 1
+id: context-stale-contamination
+title: Stale fact contamination reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: probe, action: checkpoint, checkpoint: after}
+  facts:
+    - {id: old_name, value: beta, forbidden_at: [after], hard_gate: true}
+script:
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint:
+        id: after
+        stage_id: probe
+        facts: {old_name: beta}
+        answer: The project is beta.
+    - {type: result, result: stale value survived}

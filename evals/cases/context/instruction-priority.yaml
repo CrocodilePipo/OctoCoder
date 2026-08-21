@@ -1,0 +1,32 @@
+schema_version: 1
+id: context-instruction-priority
+title: Instruction priority failure reference
+tags: [context, context-reference, expected-failure]
+prompt: Execute the failure reference.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: probe, action: checkpoint, checkpoint: after}
+  instructions:
+    - id: mandatory_json
+      text: Use JSON
+      priority: project
+      active_at: [after]
+      hard_gate: true
+    - id: old_plain
+      text: Use plain text
+      priority: user
+      superseded_at: [after]
+      hard_gate: true
+script:
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint:
+        id: after
+        stage_id: probe
+        active_instructions: [old_plain, Use plain text]
+    - {type: result, result: wrong instruction}

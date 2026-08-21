@@ -1,0 +1,73 @@
+schema_version: 1
+id: context-restart-model-switch
+title: Restart preserves context across a model switch
+description: Model-agnostic session state is restored with facts, instructions, and task state unchanged.
+tags: [context, context-stress, restart, model-switch]
+prompt: Execute the model-switch restart scenario.
+fixture: context-project
+execution: {mode: scripted}
+context:
+  stages:
+    - {id: before, action: checkpoint, checkpoint: before_restart}
+    - {id: restart, action: resume, checkpoint: after_restart}
+  facts:
+    - {id: release_id, value: RC-42, required_at: [before_restart, after_restart], hard_gate: true}
+  instructions:
+    - {id: concise_json, text: Return concise JSON, priority: project, active_at: [before_restart, after_restart], hard_gate: true}
+  states:
+    - checkpoint: before_restart
+      required_files: [README.md]
+      pending_work: [publish release candidate]
+      known_failures: [test_packaging]
+      expected_next_action: rebuild installer
+      hard_gate: true
+    - checkpoint: after_restart
+      required_files: [README.md]
+      pending_work: [publish release candidate]
+      known_failures: [test_packaging]
+      expected_next_action: rebuild installer
+      hard_gate: true
+  resumes:
+    - before_checkpoint: before_restart
+      after_checkpoint: after_restart
+      equivalent_fact_ids: [release_id]
+      equivalent_instruction_ids: [concise_json]
+      equivalent_state_fields: [required_files, pending_work, known_failures, next_action]
+      before_model: model-alpha
+      after_model: model-beta
+      require_model_change: true
+      hard_gate: true
+script:
+  duration_ms: 25
+  events:
+    - type: context
+      event_type: checkpoint
+      stage_id: before
+      checkpoint_id: before_restart
+      model: model-alpha
+      checkpoint:
+        id: before_restart
+        stage_id: before
+        model: model-alpha
+        facts: {release_id: RC-42}
+        active_instructions: [concise_json, Return concise JSON]
+        task_state: &release_state
+          required_files: [README.md]
+          pending_work: [publish release candidate]
+          known_failures: [test_packaging]
+          next_action: rebuild installer
+    - {type: context, event_type: session_resumed, stage_id: restart, checkpoint_id: after_restart, model: model-beta, status: completed}
+    - type: context
+      event_type: checkpoint
+      stage_id: restart
+      checkpoint_id: after_restart
+      model: model-beta
+      source: resume
+      checkpoint:
+        id: after_restart
+        stage_id: restart
+        model: model-beta
+        facts: {release_id: RC-42}
+        active_instructions: [concise_json, Return concise JSON]
+        task_state: *release_state
+    - {type: result, result: Cross-model resume retained, provider: scripted, model: model-beta, num_turns: 2}

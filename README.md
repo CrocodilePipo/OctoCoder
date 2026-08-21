@@ -147,3 +147,61 @@ desktop/backend-dist/win32-x64/
 如果提示找不到 `uv`，请将 `uv` 加入 `PATH`，或重新安装 `uv`。
 
 如果安装包构建时在写入元数据后出现 warning，请先检查 `desktop/out/` 下是否已经生成了安装包和本地应用目录。
+
+## Agent 评测与 EDD
+
+OctoCoder 内置混合评测体系：`scripted` 模式用于离线、确定性的 PR 门禁，`real` 模式运行真实 Agent 和模型。两种模式共享事件规范、轨迹检查、结果检查、硬门禁和报告流水线。
+
+`real` 模式会在隔离 fixture 中工作，但仍从启动评测命令的目录和用户目录读取现有 OctoCoder 配置；配置文件不会复制到 fixture 或评测产物中。环境变量凭据必须在 case 的 `execution.env_allowlist` 中显式声明。
+
+校验全部 case 和 suite：
+
+```powershell
+cd herness
+uv run octocoder-eval validate --all
+```
+
+运行无需密钥和网络的 smoke suite：
+
+```powershell
+uv run octocoder-eval run --suite smoke
+```
+
+运行单个失败参考 case，验证检查器能发现问题：
+
+```powershell
+uv run octocoder-eval run --case reference-forbidden-tool
+```
+
+比较基线和候选报告；发现回归时命令返回退出码 `3`：
+
+```powershell
+uv run octocoder-eval compare ../evals/baselines/smoke.json ../evals/runs/<run>/suite-report.json
+```
+
+评测定义放在 `evals/cases/`，不可变 fixture 放在 `evals/fixtures/`，suite 放在 `evals/suites/`。每次运行生成 case 快照、原始/规范化事件、工具轨迹、工作区 patch、stderr、分维度检查结果和 Markdown 报告。退出码：`0` 通过，`1` 评测失败，`2` Schema/框架错误，`3` 基线回归。
+
+轨迹断言支持必需/禁用工具、参数 `equals`/`contains`/`matches`/`glob`/`exists`、调用次数、精确顺序、子序列、失败调用和重复调用上限。结果断言支持命令退出码、文件存在/缺失、文件内容、Git diff 和工作区边界。
+
+EDD 规则：每次修复 Agent 行为缺陷，都要先新增一个能稳定复现缺陷的评测 case，再提交实现修复。
+
+### 上下文管理评测
+
+上下文用例在普通评测 case 上增加可选的 `context` 字段，以 stage 表达 setup、压力、checkpoint 和 resume。事实、有效/已废弃指令、任务状态、Token 容差、压缩要求和恢复前后等价字段都在 YAML 中声明；脚本模式直接提供确定性 checkpoint，真实模式要求 Agent 输出有界 JSON checkpoint。
+
+```powershell
+# PR 使用的离线门禁，无需 API Key 或网络
+uv run octocoder-eval run --suite context-smoke
+
+# 单独验证检查器会捕获过期事实
+uv run octocoder-eval run --case context-stale-contamination
+
+# 显式运行真实 Provider 的重复探针，可能产生费用
+uv run octocoder-eval run --suite context-nightly
+```
+
+上下文维度包含事实保留、指令遵循、任务连续性、恢复一致性、Token 准确度、压缩效果和污染七类检查。关键事实/指令丢失、工具调用配对破坏、恢复分歧、上下文溢出和过期事实残留可设为硬门禁，任一硬门禁失败即判定失败。
+
+每个上下文运行额外生成 `context-events.jsonl`、`context-checkpoints.json` 和 `context-metrics.json`。报告直接展示耗时、输入/输出 Token、Token 估算误差、压缩前后 Token、回收 Token、保留尾部、落盘字符数和压缩次数，不计算百分制总分或平均分；Provider 未上报 Token 时显示 `n/a`。事实保留、指令遵循、任务连续性和恢复一致性属于语义匹配指标，使用百分比表示。Suite 回归阈值使用失败运行增加数、耗时增加毫秒数、Token 增加数、工具调用增加数等绝对量；只有语义匹配下降使用比例阈值。
+
+真实探针默认不进入 PR。GitHub Actions 只有在仓库变量 `OCTOCODER_REAL_CONTEXT_EVALS=true` 且定时任务或手动选择 `context-nightly` 时才执行。修复任何上下文行为缺陷时，先在 `evals/cases/context/` 添加稳定复现用例，再修改上下文算法。

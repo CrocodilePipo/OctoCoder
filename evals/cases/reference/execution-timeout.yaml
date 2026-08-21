@@ -1,0 +1,11 @@
+schema_version: 1
+id: reference-execution-timeout
+title: Reference timeout failure
+tags: [reference-failure]
+prompt: Demonstrate a timeout result.
+fixture: smoke-edit
+execution: {mode: scripted}
+expected: {}
+script:
+  status: timeout
+  stderr: Simulated timeout

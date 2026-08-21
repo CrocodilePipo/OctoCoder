@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 octocoder = "octocoder.__main__:main"
+octocoder-eval = "octocoder.evals.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["octocoder"]

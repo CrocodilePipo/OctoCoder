@@ -1,0 +1,68 @@
+name: Agent evaluations
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Evaluation suite
+        required: true
+        default: nightly
+        type: choice
+        options: [smoke, context-smoke, nightly, release, context-nightly]
+  schedule:
+    - cron: "20 18 * * *"
+
+jobs:
+  deterministic-evals:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: herness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --dev
+      - run: uv run pytest -q
+      - name: Run deterministic context gate
+        run: uv run octocoder-eval run --suite context-smoke
+      - name: Run selected evaluation suite
+        shell: bash
+        run: |
+          suite="smoke"
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then suite="nightly"; fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then suite="${{ inputs.suite }}"; fi
+          if [[ "$suite" == "context-nightly" ]]; then suite="smoke"; fi
+          uv run octocoder-eval run --suite "$suite"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-evaluation-report
+          path: evals/runs/
+          if-no-files-found: ignore
+
+  real-context-probes:
+    if: >-
+      vars.OCTOCODER_REAL_CONTEXT_EVALS == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.suite == 'context-nightly'))
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: herness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --dev
+      - name: Run opt-in repeated real context probes
+        run: uv run octocoder-eval run --suite context-nightly
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-context-evaluation-report
+          path: evals/runs/
+          if-no-files-found: ignore

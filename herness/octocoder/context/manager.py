@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import threading
@@ -20,6 +21,7 @@ from octocoder.conversation import (
     estimate_tokens,
 )
 from octocoder.serialization import build_messages
+from octocoder.context_observer import ContextObserver, observe
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -226,6 +228,7 @@ def apply_tool_result_budget(
     conversation: ConversationManager,
     session_dir: Path,
     state: ContentReplacementState,
+    observer: ContextObserver | None = None,
 ) -> list[ContentReplacementRecord]:
     """
     Design A: 就地修改原始对话历史，避免拷贝开销。
@@ -238,6 +241,11 @@ def apply_tool_result_budget(
     返回本轮新产生的替换记录列表（List[ContentReplacementRecord]）。
     """
     new_records: list[ContentReplacementRecord] = []
+    before_chars = sum(
+        len(result.content)
+        for message in conversation.history
+        for result in message.tool_results
+    )
 
     abs_spill_dir = os.path.abspath(str(session_dir))
     tool_use_index: dict = {}
@@ -320,6 +328,24 @@ def apply_tool_result_budget(
             if tr.tool_use_id not in state.replacements:
                 state.seen_ids.add(tr.tool_use_id)
 
+    if new_records:
+        after_chars = sum(
+            len(result.content)
+            for message in conversation.history
+            for result in message.tool_results
+        )
+        observe(
+            observer,
+            "tool_result_spill",
+            before_chars=before_chars,
+            after_chars=after_chars,
+            spilled_chars=max(0, before_chars - after_chars),
+            spilled_results=len(new_records),
+            replacement_ids=[
+                hashlib.sha256(record.tool_use_id.encode("utf-8")).hexdigest()[:12]
+                for record in new_records[:100]
+            ],
+        )
     return new_records
 
 
@@ -782,11 +808,17 @@ async def auto_compact(
     tool_schemas: list[Mapping[str, Any]] | None = None,
     transcript_path: str = "",
     budget_messages: list[Message] | None = None,
+    observer: ContextObserver | None = None,
 ) -> CompactEvent | str | None:
     # 以真实 API 用量为锚点做阈值判断：current_tokens() 返回上次计费基准
     # （input + cache_read + cache_creation + output）加上锚点之后新增消息的
     # 字符估算。冷启动或刚压缩清空锚点时，退化为对整个 history 做字符估算。
     current = conversation.current_tokens()
+
+    soft_threshold = compute_compact_threshold(context_window, manual=False)
+    hard_threshold = compute_compact_threshold(context_window, manual=True)
+    trigger = "manual" if manual else "soft_threshold"
+    threshold = hard_threshold if manual else soft_threshold
 
     if manual:
         # 手动压缩（/compact）：直接走压缩流程，不检查阈值
@@ -794,22 +826,49 @@ async def auto_compact(
     else:
         # 双阈值判断，对齐 Go ManageContext 逻辑：
         # 1) 软触发线（auto margin 13K）：低于此线不需要压缩
-        soft_threshold = compute_compact_threshold(context_window, manual=False)
         if current < soft_threshold:
+            observe(
+                observer,
+                "compact_skipped",
+                trigger="below_threshold",
+                context_window=context_window,
+                threshold_tokens=soft_threshold,
+                estimated_tokens=current,
+                message_count=len(conversation.history),
+            )
             return None
 
         # 2) 硬触发线（manual margin 3K）：超过此线强制压缩，绕过熔断器，
         #    因为上下文已经过于接近窗口上限，不能冒跳过的风险
-        hard_threshold = compute_compact_threshold(context_window, manual=True)
         if current >= hard_threshold:
             # 强制压缩路径：不检查熔断器
-            pass
+            trigger = "hard_threshold"
+            threshold = hard_threshold
         else:
             # 处于软硬阈值之间：走正常的熔断器保护逻辑
             if breaker is not None and breaker.is_open():
+                observe(
+                    observer,
+                    "compact_skipped",
+                    trigger="circuit_breaker",
+                    context_window=context_window,
+                    threshold_tokens=soft_threshold,
+                    estimated_tokens=current,
+                    message_count=len(conversation.history),
+                )
                 return "自动压缩已熔断（连续失败 3 次），请手动处理或使用 /compact"
 
     before_tokens = current
+    observe(
+        observer,
+        "compact_started",
+        trigger=trigger,
+        context_window=context_window,
+        threshold_tokens=threshold,
+        estimated_tokens=current,
+        before_tokens=before_tokens,
+        message_count=len(conversation.history),
+    )
 
     # 先应用 tool-result budget，再做 auto-compact，确保预算内的结果不会被误压缩
     # 当调用方提前对 conversation 做了 budget 替换，把替换后的消息列表传入
@@ -826,6 +885,18 @@ async def auto_compact(
     # 待摘要的前缀太小时退化为不压缩——要么全部消息都落在保留窗口内
     # （keep_start <= 0），要么摘要回收的 token 还不够摘要本身的开销。
     if keep_start <= 0 or _prefix_too_small_to_compact(to_summarize):
+        observe(
+            observer,
+            "compact_skipped",
+            trigger="prefix_too_small",
+            context_window=context_window,
+            threshold_tokens=threshold,
+            estimated_tokens=current,
+            before_tokens=before_tokens,
+            prefix_messages=len(to_summarize),
+            retained_messages=len(keep_tail),
+            retained_tokens=estimate_tokens(list(keep_tail)),
+        )
         return None
 
     messages_for_summary = build_messages(list(to_summarize), protocol)
@@ -879,11 +950,30 @@ async def auto_compact(
                 continue
             if breaker is not None:
                 breaker.record_failure()
+            observe(
+                observer,
+                "compact_failed",
+                trigger="summary_error",
+                context_window=context_window,
+                threshold_tokens=threshold,
+                before_tokens=before_tokens,
+                retry_count=attempt + 1,
+                error_type=type(e).__name__,
+            )
             return f"摘要生成失败: {e}"
 
     if llm_output is None:
         if breaker is not None:
             breaker.record_failure()
+        observe(
+            observer,
+            "compact_failed",
+            trigger="retry_exhausted",
+            context_window=context_window,
+            threshold_tokens=threshold,
+            before_tokens=before_tokens,
+            retry_count=max_retries,
+        )
         return "摘要生成失败：多次重试后仍超出上下文限制"
 
     summary = extract_summary(llm_output)
@@ -907,6 +997,27 @@ async def auto_compact(
 
     if breaker is not None:
         breaker.record_success()
+
+    after_tokens = conversation.current_tokens()
+    summary_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+    boundary_material = (
+        f"{summary_hash}:{len(keep_tail)}:{estimate_tokens(list(keep_tail))}"
+    )
+    observe(
+        observer,
+        "compact_completed",
+        trigger=trigger,
+        context_window=context_window,
+        threshold_tokens=threshold,
+        before_tokens=before_tokens,
+        after_tokens=after_tokens,
+        prefix_messages=len(to_summarize),
+        retained_messages=len(keep_tail),
+        retained_tokens=estimate_tokens(list(keep_tail)),
+        summary_hash=summary_hash,
+        boundary_id=hashlib.sha256(boundary_material.encode("utf-8")).hexdigest()[:24],
+        retry_count=attempt,
+    )
 
     # 将结构化的 boundary（摘要 + 保留的尾部原文）交给 session 层，
     # 由它持久化为一条 compact_boundary 记录。keep tail 就是拼回重建 history 的那段。

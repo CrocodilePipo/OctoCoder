@@ -1,0 +1,141 @@
+schema_version: 1
+id: context-retention-success
+title: Context retention survives compaction and resume
+description: Offline reference for facts, instructions, state, token accounting, compression, and resume.
+tags: [context, context-smoke, smoke]
+prompt: Execute the declared context scenario.
+fixture: context-project
+execution: {mode: scripted}
+limits:
+  timeout_seconds: 30
+  max_turns: 10
+  max_context_events: 100
+context:
+  stages:
+    - {id: setup, action: turn, prompt: "Project name is alpha. Use JSON."}
+    - {id: pressure, action: pressure, prompt: "Add deterministic context pressure."}
+    - {id: probe, action: checkpoint, checkpoint: after}
+    - {id: resume, action: resume, checkpoint: resumed}
+  facts:
+    - id: project_name
+      value: alpha
+      source: src/app.py
+      required_at: [after, resumed]
+      hard_gate: true
+    - id: stale_project_name
+      value: beta
+      forbidden_at: [after, resumed]
+      hard_gate: true
+  instructions:
+    - id: json
+      text: Use JSON
+      priority: project
+      active_at: [after, resumed]
+      hard_gate: true
+    - id: plain
+      text: Use plain text
+      priority: user
+      superseded_at: [after, resumed]
+      hard_gate: true
+  states:
+    - checkpoint: after
+      required_files: [src/app.py]
+      pending_work: [add tests]
+      known_failures: [test_old]
+      expected_next_action: run tests
+      require_complete_tool_pairs: true
+      hard_gate: true
+  token:
+    max_absolute_error_tokens: 1000
+    trigger_tolerance_tokens: 1000
+    require_provider_anchor: true
+    hard_gate: true
+  compression:
+    min_reclaimed_tokens: 100000
+    max_after_tokens: 50000
+    max_retained_tokens: 10000
+    min_compactions: 1
+    max_compactions: 2
+    hard_gate: true
+  resumes:
+    - before_checkpoint: after
+      after_checkpoint: resumed
+      equivalent_fact_ids: [project_name]
+      equivalent_instruction_ids: [json]
+      equivalent_state_fields: [next_action]
+      hard_gate: true
+script:
+  duration_ms: 20
+  events:
+    - type: context
+      event_type: usage_anchor
+      stage_id: pressure
+      estimated_tokens: 100000
+      provider_tokens: 100500
+    - type: context
+      event_type: compact_started
+      stage_id: pressure
+      trigger: soft_threshold
+      context_window: 200000
+      threshold_tokens: 187000
+      estimated_tokens: 187500
+      before_tokens: 187500
+    - type: context
+      event_type: compact_completed
+      stage_id: pressure
+      context_window: 200000
+      before_tokens: 190000
+      after_tokens: 40000
+      prefix_messages: 20
+      retained_messages: 6
+      retained_tokens: 9000
+      summary_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      boundary_id: stable-boundary
+    - type: context
+      event_type: tool_result_spill
+      stage_id: pressure
+      spilled_results: 1
+      spilled_chars: 25000
+    - type: context
+      event_type: checkpoint
+      stage_id: probe
+      checkpoint_id: after
+      checkpoint:
+        id: after
+        stage_id: probe
+        facts: {project_name: alpha}
+        active_instructions: [json, Use JSON]
+        task_state:
+          required_files: [src/app.py]
+          pending_work: [add tests]
+          known_failures: [test_old]
+          next_action: run tests
+        tool_pair_complete: true
+    - type: context
+      event_type: session_resumed
+      stage_id: resume
+      checkpoint_id: resumed
+      boundary_id: stable-boundary
+      status: completed
+    - type: context
+      event_type: checkpoint
+      stage_id: resume
+      checkpoint_id: resumed
+      source: resume
+      checkpoint:
+        id: resumed
+        stage_id: resume
+        facts: {project_name: alpha}
+        active_instructions: [json, Use JSON]
+        task_state:
+          required_files: [src/app.py]
+          pending_work: [add tests]
+          known_failures: [test_old]
+          next_action: run tests
+        tool_pair_complete: true
+    - type: result
+      result: Context retained
+      provider: scripted
+      model: deterministic
+      num_turns: 2
+      usage: {input_tokens: 1000, output_tokens: 100}

@@ -1,0 +1,31 @@
+schema_version: 1
+id: context-retention-real
+title: Optional real-provider context retention probe
+description: Opt-in repeated black-box probe. This case may incur provider cost.
+tags: [context, context-real, optional-provider]
+prompt: Execute the declared real context scenario.
+fixture: context-project
+execution:
+  mode: real
+limits:
+  timeout_seconds: 900
+  max_turns: 20
+  max_context_events: 10000
+context:
+  stages:
+    - {id: setup, action: turn, prompt: "Remember: project_name is alpha and the next action is run tests."}
+    - {id: pressure, action: pressure, prompt: "Summarize the fixture and preserve the project name and next action.", repeat: 3}
+    - {id: probe, action: checkpoint, checkpoint: after}
+    - {id: resume, action: resume, checkpoint: resumed}
+  facts:
+    - {id: project_name, value: alpha, required_at: [after, resumed], hard_gate: true}
+  states:
+    - checkpoint: after
+      expected_next_action: run tests
+      hard_gate: true
+  resumes:
+    - before_checkpoint: after
+      after_checkpoint: resumed
+      equivalent_fact_ids: [project_name]
+      equivalent_state_fields: [next_action]
+      hard_gate: true

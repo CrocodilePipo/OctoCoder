@@ -1,0 +1,11 @@
+schema_version: 1
+id: context-provider
+description: Explicitly invoked bounded real-provider semantic context probe; incurs provider usage.
+cases: [context-semantic-retention-real]
+repeat: 1
+thresholds:
+  failed_runs_increase: 0
+  context_retention_drop: 0.1
+  context_adherence_drop: 0.1
+  context_resume_drop: 0.1
+  context_contamination_increase: 0

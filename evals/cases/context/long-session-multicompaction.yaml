@@ -1,0 +1,147 @@
+schema_version: 1
+id: context-long-session-multicompaction
+title: Accelerated long session survives repeated compaction
+description: Token-pressure equivalent of a multi-hour coding session with four compaction generations and restart.
+tags: [context, context-stress, long-session, multicompaction]
+prompt: Execute the accelerated long-session context scenario.
+fixture: context-project
+execution: {mode: scripted}
+limits:
+  timeout_seconds: 60
+  max_turns: 50
+  max_context_events: 1000
+context:
+  stages:
+    - {id: setup, action: turn, prompt: "Project alpha uses SQLite. Keep the test plan active."}
+    - {id: pressure_1, action: pressure, prompt: "Inject generation one pressure."}
+    - {id: probe_1, action: checkpoint, checkpoint: after_cycle_1}
+    - {id: pressure_2, action: pressure, prompt: "Inject generation two pressure."}
+    - {id: probe_2, action: checkpoint, checkpoint: after_cycle_2}
+    - {id: pressure_3, action: pressure, prompt: "Inject generation three pressure."}
+    - {id: probe_3, action: checkpoint, checkpoint: after_cycle_3}
+    - {id: pressure_4, action: pressure, prompt: "Inject generation four pressure."}
+    - {id: probe_4, action: checkpoint, checkpoint: after_cycle_4}
+    - {id: resume, action: resume, checkpoint: resumed}
+  facts:
+    - id: project_name
+      value: alpha
+      required_at: [after_cycle_1, after_cycle_2, after_cycle_3, after_cycle_4, resumed]
+      hard_gate: true
+    - id: database
+      value: sqlite
+      required_at: [after_cycle_1, after_cycle_2, after_cycle_3, after_cycle_4, resumed]
+      hard_gate: true
+    - id: stale_database
+      value: postgres
+      forbidden_at: [after_cycle_2, after_cycle_3, after_cycle_4, resumed]
+      hard_gate: true
+  instructions:
+    - id: json
+      text: Use JSON for machine-readable checkpoints
+      priority: project
+      active_at: [after_cycle_1, after_cycle_2, after_cycle_3, after_cycle_4, resumed]
+      hard_gate: true
+    - id: prose
+      text: Use unstructured prose
+      priority: task
+      superseded_at: [after_cycle_1, after_cycle_2, after_cycle_3, after_cycle_4, resumed]
+      hard_gate: true
+  states:
+    - checkpoint: after_cycle_4
+      required_files: [src/app.py]
+      pending_work: [add regression tests]
+      known_failures: [test_legacy]
+      expected_next_action: run targeted tests
+      require_complete_tool_pairs: true
+      hard_gate: true
+    - checkpoint: resumed
+      required_files: [src/app.py]
+      pending_work: [add regression tests]
+      known_failures: [test_legacy]
+      expected_next_action: run targeted tests
+      require_complete_tool_pairs: true
+      hard_gate: true
+  token:
+    max_absolute_error_tokens: 1000
+    trigger_tolerance_tokens: 1000
+    require_provider_anchor: true
+    hard_gate: true
+  compression:
+    min_reclaimed_tokens: 300000
+    max_after_tokens: 30000
+    max_retained_tokens: 10000
+    min_compactions: 4
+    max_compactions: 4
+    hard_gate: true
+  resumes:
+    - before_checkpoint: after_cycle_4
+      after_checkpoint: resumed
+      equivalent_fact_ids: [project_name, database]
+      equivalent_instruction_ids: [json]
+      equivalent_state_fields: [required_files, pending_work, known_failures, next_action]
+      hard_gate: true
+script:
+  duration_ms: 120
+  events:
+    - {type: context, event_type: usage_anchor, stage_id: pressure_1, estimated_tokens: 95000, provider_tokens: 95500}
+    - {type: context, event_type: compact_started, stage_id: pressure_1, trigger: soft_threshold, context_window: 128000, threshold_tokens: 95000, estimated_tokens: 95500, before_tokens: 95500}
+    - {type: context, event_type: compact_completed, stage_id: pressure_1, context_window: 128000, before_tokens: 110000, after_tokens: 25000, retained_tokens: 8500, boundary_id: boundary-1, summary_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe_1
+      checkpoint_id: after_cycle_1
+      checkpoint: &checkpoint
+        id: after_cycle_1
+        stage_id: probe_1
+        facts: {project_name: alpha, database: sqlite}
+        active_instructions: [json, Use JSON for machine-readable checkpoints]
+        task_state: &state
+          required_files: [src/app.py]
+          pending_work: [add regression tests]
+          known_failures: [test_legacy]
+          next_action: run targeted tests
+        tool_pair_complete: true
+    - {type: context, event_type: usage_anchor, stage_id: pressure_2, estimated_tokens: 96000, provider_tokens: 96500}
+    - {type: context, event_type: compact_started, stage_id: pressure_2, trigger: soft_threshold, context_window: 128000, threshold_tokens: 95000, estimated_tokens: 96000, before_tokens: 96000}
+    - {type: context, event_type: compact_completed, stage_id: pressure_2, context_window: 128000, before_tokens: 112000, after_tokens: 26000, retained_tokens: 9000, boundary_id: boundary-2, summary_hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe_2
+      checkpoint_id: after_cycle_2
+      checkpoint:
+        <<: *checkpoint
+        id: after_cycle_2
+        stage_id: probe_2
+    - {type: context, event_type: usage_anchor, stage_id: pressure_3, estimated_tokens: 95500, provider_tokens: 96000}
+    - {type: context, event_type: compact_started, stage_id: pressure_3, trigger: soft_threshold, context_window: 128000, threshold_tokens: 95000, estimated_tokens: 95500, before_tokens: 95500}
+    - {type: context, event_type: compact_completed, stage_id: pressure_3, context_window: 128000, before_tokens: 111000, after_tokens: 24000, retained_tokens: 8800, boundary_id: boundary-3, summary_hash: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe_3
+      checkpoint_id: after_cycle_3
+      checkpoint:
+        <<: *checkpoint
+        id: after_cycle_3
+        stage_id: probe_3
+    - {type: context, event_type: usage_anchor, stage_id: pressure_4, estimated_tokens: 96000, provider_tokens: 96500}
+    - {type: context, event_type: compact_started, stage_id: pressure_4, trigger: soft_threshold, context_window: 128000, threshold_tokens: 95000, estimated_tokens: 96000, before_tokens: 96000}
+    - {type: context, event_type: compact_completed, stage_id: pressure_4, context_window: 128000, before_tokens: 113000, after_tokens: 25000, retained_tokens: 9200, boundary_id: boundary-4, summary_hash: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}
+    - type: context
+      event_type: checkpoint
+      stage_id: probe_4
+      checkpoint_id: after_cycle_4
+      checkpoint:
+        <<: *checkpoint
+        id: after_cycle_4
+        stage_id: probe_4
+    - {type: context, event_type: session_resumed, stage_id: resume, checkpoint_id: resumed, boundary_id: boundary-4, status: completed}
+    - type: context
+      event_type: checkpoint
+      stage_id: resume
+      checkpoint_id: resumed
+      source: resume
+      checkpoint:
+        <<: *checkpoint
+        id: resumed
+        stage_id: resume
+    - {type: result, result: Long session retained, provider: scripted, model: deterministic, num_turns: 10, usage: {input_tokens: 386000, output_tokens: 4000}}

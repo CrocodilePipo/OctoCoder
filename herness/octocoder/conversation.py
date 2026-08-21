@@ -8,6 +8,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from octocoder.context_observer import ContextObserver, observe
+
 
 @dataclass
 class ToolUseBlock:
@@ -86,6 +88,7 @@ class ConversationManager:
         output_tokens: int = 0,
         cache_read: int = 0,
         cache_creation: int = 0,
+        observer: ContextObserver | None = None,
     ) -> None:
         """根据一次 API 响应钉下一个真实用量锚点。
 
@@ -95,12 +98,20 @@ class ConversationManager:
         assistant 的回复此刻已成为历史的一部分。anchor_count 对齐到当前的消息
         数量，这样后续新追加的消息就成了唯一需要估算的部分。
         """
+        estimated_tokens = self.current_tokens()
         self.baseline_tokens = (
             input_tokens + cache_read + cache_creation + output_tokens
         )
         self.anchor_count = len(self.history)
         # 保持旧字段同步，兼容仍在使用它的读取方。
         self.last_input_tokens = self.baseline_tokens
+        observe(
+            observer,
+            "usage_anchor",
+            estimated_tokens=estimated_tokens,
+            provider_tokens=self.baseline_tokens,
+            anchor_message_count=self.anchor_count,
+        )
 
     def current_tokens(self) -> int:
         """对当前对话中的 token 数量做出最佳估算。

@@ -1,0 +1,17 @@
+schema_version: 1
+id: reference-order-violation
+title: Reference trajectory-order failure
+tags: [reference-failure]
+prompt: Demonstrate an ordering failure.
+fixture: smoke-edit
+execution: {mode: scripted}
+expected:
+  trajectory:
+    match: exact
+    order: [ReadFile, WriteFile]
+script:
+  events:
+    - {type: tool_use, tool_name: WriteFile, tool_id: call_order_write, args: {path: README.md}}
+    - {type: tool_result, tool_name: WriteFile, tool_id: call_order_write, output: ok, is_error: false}
+    - {type: tool_use, tool_name: ReadFile, tool_id: call_order_read, args: {path: README.md}}
+    - {type: tool_result, tool_name: ReadFile, tool_id: call_order_read, output: ok, is_error: false}

@@ -1,0 +1,19 @@
+schema_version: 1
+id: context-stress
+description: Deterministic advanced context gate for long sessions, adversarial memory, agent isolation, and model-switch restart.
+cases:
+  - context-long-session-multicompaction
+  - context-adversarial-retention
+  - context-multi-agent-isolation
+  - context-restart-model-switch
+repeat: 1
+thresholds:
+  failed_runs_increase: 0
+  context_retention_drop: 0
+  context_adherence_drop: 0
+  context_resume_drop: 0
+  context_token_error_increase_tokens: 500
+  context_reclaimed_tokens_drop: 10000
+  context_retained_tokens_increase: 1000
+  context_compaction_count_increase: 0
+  context_contamination_increase: 0

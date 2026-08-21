@@ -1,0 +1,11 @@
+schema_version: 1
+id: reference-outcome-failure
+title: Reference outcome failure
+tags: [reference-failure]
+prompt: Demonstrate a missing output file.
+fixture: smoke-edit
+execution: {mode: scripted}
+expected:
+  outcome:
+    - {id: missing-result, type: file_exists, path: result.txt}
+script: {events: [], effects: []}
